@@ -73,7 +73,7 @@ properly add the program's executable to its PATH, then it should still be
 possible to execute the program with
 
 ```
-python -m mcdeck
+python -m mcdeck.script
 ```
 
 See Help->Usage in the program's menu for (very) basic information about

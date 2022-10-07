@@ -1,3 +1,7 @@
+v0.5.5.2
+- Fix: launch with 'python -m mcdeck.script' instead due to setuptools/pip
+       not playing nice with installing a __main__.py file
+
 v0.5.5.1
 - New: script can also be launched with 'python -m mcdeck'
 - Fix: information in Readme.md about how to launch the software
