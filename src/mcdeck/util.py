@@ -25,6 +25,7 @@ import ntpath
 import platform
 import posixpath
 import urllib
+import urllib.request
 
 from PySide6 import QtWidgets, QtGui, QtCore
 

@@ -18,7 +18,10 @@
 # MCdeck.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-"""Generic shared functionality for MCdeck."""
+"""Enables launching the package as a program."""
 
-# lcgtools version number
-__version__ = '0.5.5.1'
+import mcdeck.script
+
+
+if __name__ == '__main__':
+    mcdeck.script.main()

@@ -1,2 +1,6 @@
+v0.5.5.1
+- New: script can also be launched with 'python -m mcdeck'
+- Fix: information in Readme.md about how to launch the software
+
 v0.5.5
-- Added export of OCTGN card set(s)
+- New: added export of OCTGN card set(s)
