@@ -21,6 +21,8 @@
 
 """GUI app for building custom card decks for Marvel Champions: TCG."""
 
+from argparse import ArgumentParser
+import hashlib
 import http.client
 import os.path
 import pathlib
@@ -35,11 +37,14 @@ from PySide6 import QtWidgets, QtCore, QtGui
 from lcgtools import LcgException
 from lcgtools.graphics import LcgCardPdfGenerator, LcgImage
 from lcgtools.util import LcgAppResources
+
+import mcdeck
+import mcdeck.octgn as octgn
+from mcdeck.settings import Settings, SettingsDialog
+from mcdeck.tts import TTSExportDialog
 from mcdeck.util import loadImageFromFileDialog, ErrorDialog, download_image
 from mcdeck.util import DeckUndoBuffer, to_posix_path, to_local_path
 from mcdeck.util import image_mime_type, parse_mcd_file_section_header
-from mcdeck.settings import Settings, SettingsDialog
-from mcdeck.tts import TTSExportDialog
 
 
 class MCDeck(QtWidgets.QMainWindow):
@@ -97,17 +102,23 @@ class MCDeck(QtWidgets.QMainWindow):
         action.setStatusTip('Save the deck, selecting a new filename')
         self.__save_as_action = action
 
-        action = QtGui.QAction('Export &PDF', self)
+        action = QtGui.QAction('&PDF', self)
         action.setShortcut('Ctrl+P')
         action.triggered.connect(deck.exportPdf)
         action.setStatusTip('Export deck as a printable PDF document')
         export_pdf_action = action
 
-        action = QtGui.QAction('Export &TTS', self)
+        action = QtGui.QAction('&TTS', self)
         action.setShortcut('Ctrl+T')
         action.triggered.connect(deck.exportTts)
-        action.setStatusTip('Export deck as images for Tabletop Simulator')
+        action.setStatusTip('Export Tabletop Simulator deck front/back images')
         export_tts_action = action
+
+        action = QtGui.QAction('&Octgn', self)
+        action.setEnabled(False)
+        action.triggered.connect(deck.exportOctgn)
+        action.setStatusTip('Export card set for OCTGN')
+        self.__export_octgn_action = action
 
         action = QtGui.QAction('&Exit', self)
         action.setShortcut('Ctrl+Q')
@@ -209,7 +220,7 @@ class MCDeck(QtWidgets.QMainWindow):
         action.toggled.connect(deck.back_image_on_top)
         self.__back_on_top = action
 
-        action = QtGui.QAction('&Reset zoom', self)
+        action = QtGui.QAction('&Reset', self)
         action.setShortcut('Ctrl+0')
         action.setStatusTip('Reset zoom to 100% zoom level')
         action.triggered.connect(deck.zoom_reset)
@@ -288,6 +299,7 @@ class MCDeck(QtWidgets.QMainWindow):
         self.__remove_back_image = action
 
         action = QtGui.QAction('Rota&te 180°', self)
+        action.setShortcut('Ctrl+R')
         action.setStatusTip('Rotates the front card(s) 180°')
         action.setEnabled(False)
         action.triggered.connect(deck.rotateHalfCircle)
@@ -313,10 +325,48 @@ class MCDeck(QtWidgets.QMainWindow):
         action.triggered.connect(deck.deleteCards)
         self.__delete_cards = action
 
-        action = QtGui.QAction('&Get default back images ...', self)
+        action = QtGui.QAction('&Get back images ...', self)
         action.setStatusTip('Install card back images from Hall of Heroes')
         action.triggered.connect(self.menu_download_card_backs)
         self.__download_card_backs = action
+
+        action = QtGui.QAction('Enable', self)
+        action.setStatusTip('Enable OCTGN metadata for deck')
+        action.triggered.connect(self.menu_octgn_enable)
+        self._octgn_enable = action
+
+        action = QtGui.QAction('&Edit ...', self)
+        action.setShortcut('Ctrl+E')
+        action.setStatusTip('Edit OCTGN metadata')
+        action.setEnabled(False)
+        action.triggered.connect(self.menu_octgn_edit)
+        self._octgn_edit = action
+
+        action = QtGui.QAction('&Edit Selected ...', self)
+        action.setShortcut('Shift+Ctrl+E')
+        action.setStatusTip('Edit OCTGN metadata for selected card(s)')
+        action.setEnabled(False)
+        action.triggered.connect(self.menu_octgn_edit_selected)
+        self._octgn_edit_selected = action
+
+        action = QtGui.QAction('&Delete', self)
+        action.setStatusTip('Delete OCTGN metadata')
+        action.setEnabled(False)
+        action.triggered.connect(self.menu_octgn_delete)
+        self._octgn_delete = action
+
+        action = QtGui.QAction('&Install deck as card set', self)
+        action.setStatusTip('Install the current deck directly into OCTGN')
+        action.setEnabled(False)
+        action.triggered.connect(self.menu_octgn_install)
+        self._octgn_install = action
+
+        action = QtGui.QAction('&Uninstall deck as card set', self)
+        action.setStatusTip('Uninstalls card set with same ID as current deck '
+                            ' from OCTGN')
+        action.setEnabled(False)
+        action.triggered.connect(self.menu_octgn_uninstall)
+        self._octgn_uninstall = action
 
         action = QtGui.QAction('&About', self)
         action.setStatusTip('Information about this app')
@@ -339,19 +389,20 @@ class MCDeck(QtWidgets.QMainWindow):
         # if platform.system() == 'Darwin':
         #     menu_bar.setNativeMenuBar(False)
 
-        file_menu = menu_bar.addMenu("&File")
+        file_menu = menu_bar.addMenu('&File')
         file_menu.addAction(new_action)
         file_menu.addSeparator()
         file_menu.addAction(load_action)
         file_menu.addAction(self.__save_action)
         file_menu.addAction(self.__save_as_action)
-        file_menu.addSeparator()
-        file_menu.addAction(export_pdf_action)
-        file_menu.addAction(export_tts_action)
+        export_menu = file_menu.addMenu('&Export')
+        export_menu.addAction(export_pdf_action)
+        export_menu.addAction(export_tts_action)
+        export_menu.addAction(self.__export_octgn_action)
         file_menu.addSeparator()
         file_menu.addAction(exit_action)
 
-        edit_menu = menu_bar.addMenu("&Edit")
+        edit_menu = menu_bar.addMenu('&Edit')
         edit_menu.addAction(self.__undo_action)
         edit_menu.addAction(self.__redo_action)
         edit_menu.addSeparator()
@@ -360,10 +411,11 @@ class MCDeck(QtWidgets.QMainWindow):
         edit_menu.addAction(self.__copy_front)
         edit_menu.addAction(self.__copy_back)
         edit_menu.addAction(self.__paste_action)
-        edit_menu.addAction(self.__paste_before_action)
-        edit_menu.addAction(self.__paste_player_action)
-        edit_menu.addAction(self.__paste_encounter_action)
-        edit_menu.addAction(self.__paste_villain_action)
+        paste_menu = edit_menu.addMenu('Paste &special')
+        paste_menu.addAction(self.__paste_before_action)
+        paste_menu.addAction(self.__paste_player_action)
+        paste_menu.addAction(self.__paste_encounter_action)
+        paste_menu.addAction(self.__paste_villain_action)
         edit_menu.addSeparator()
         edit_menu.addAction(select_all_action)
         edit_menu.addAction(select_none_action)
@@ -371,14 +423,14 @@ class MCDeck(QtWidgets.QMainWindow):
         edit_menu.addAction(settings_action)
         edit_menu.addAction(reset_action)
 
-        view_menu = menu_bar.addMenu("&View")
+        view_menu = menu_bar.addMenu('&View')
         view_menu.addAction(self.__back_on_top)
-        view_menu.addSeparator()
-        view_menu.addAction(zoom_reset_action)
-        view_menu.addAction(zoom_in_action)
-        view_menu.addAction(zoom_out_action)
+        zoom_menu = view_menu.addMenu('&Zoom')
+        zoom_menu.addAction(zoom_reset_action)
+        zoom_menu.addAction(zoom_in_action)
+        zoom_menu.addAction(zoom_out_action)
 
-        selection_menu = menu_bar.addMenu("&Selection")
+        selection_menu = menu_bar.addMenu('&Selection')
         selection_menu.addAction(self.__set_player)
         selection_menu.addAction(self.__set_encounter)
         selection_menu.addAction(self.__set_villain)
@@ -394,10 +446,19 @@ class MCDeck(QtWidgets.QMainWindow):
         selection_menu.addSeparator()
         selection_menu.addAction(self.__delete_cards)
 
-        tools_menu = menu_bar.addMenu("&Tools")
+        tools_menu = menu_bar.addMenu('&Tools')
         tools_menu.addAction(self.__download_card_backs)
+        octgn_menu = tools_menu.addMenu('&Octgn')
+        octgn_menu.addAction(self._octgn_enable)
+        octgn_menu.addAction(self._octgn_edit)
+        octgn_menu.addAction(self._octgn_edit_selected)
+        octgn_menu.addAction(self._octgn_delete)
+        octgn_menu.addSeparator()
+        octgn_menu.addAction(self._octgn_install)
+        octgn_menu.addAction(self._octgn_uninstall)
+        tools_menu.addSeparator()
 
-        selection_menu = menu_bar.addMenu("&Help")
+        selection_menu = menu_bar.addMenu('&Help')
         selection_menu.addAction(help_about)
         selection_menu.addAction(help_usage)
         selection_menu.addAction(help_resources)
@@ -421,6 +482,7 @@ class MCDeck(QtWidgets.QMainWindow):
         deck._undo.haveRedo.connect(self.__redo_action.setEnabled)
         deck.deckChanged.connect(self.deckChanged)
         deck.filenameChange.connect(self.updateTitleFilename)
+        deck.deckHasOctgn.connect(self.enableOctgn)
 
         # Monitor system clipboard, process once to update menu items
         MCDeck.clipboard().dataChanged.connect(deck.systemClipboardChanged)
@@ -487,6 +549,7 @@ class MCDeck(QtWidgets.QMainWindow):
             MCDeck.settings.clear()
             MCDeck.deck.reset()
 
+    @QtCore.Slot()
     def menu_download_card_backs(self):
         dialog = QtWidgets.QDialog(self)
 
@@ -509,8 +572,14 @@ class MCDeck(QtWidgets.QMainWindow):
         card_selector = QtWidgets.QHBoxLayout()
         card_selector.addWidget(QtWidgets.QLabel('Select card set:'))
         cardset_cb = QtWidgets.QComboBox()
-        cardset_cb.setToolTip('Card set to download and set as default')
-        for option in 'Branded', 'Promo', 'Fans':
+        _tip = ('Card set to download and set as default:\n'
+                '- Branded, intended for print (source: Hall of Heroes)\n'
+                '- Branded, intended for TTS (source: Homebrew)\n'
+                '- Promo (source: Hall of Heroes)\n'
+                '- Fans (source: Hall of Heroes)')
+        cardset_cb.setToolTip(_tip)
+        for option in ('Branded, print (HoH)', 'Branded, TTS (Homebrew)',
+                       'Promo', 'Fans'):
             cardset_cb.addItem(option)
         card_selector.addWidget(cardset_cb)
         main_layout.addLayout(card_selector)
@@ -526,25 +595,37 @@ class MCDeck(QtWidgets.QMainWindow):
 
         dialog.setLayout(main_layout)
         if dialog.exec():
-            cardset = cardset_cb.currentText()
-            _dict = {'Branded':['marvel-player-back','marvel-encounter-back',
-                                'marvel-villain-back'],
-                     'Promo':['promo-player-back', 'promo-encounter-back',
-                              'promo-villain-back'],
-                     'Fans':['fan-back-player', 'fan-back-encounter',
-                              'fan-back-villain']}
-            pre = 'https://hallofheroeshome.files.wordpress.com/2021/02/'
-            post = '.png'
-            urls = [pre + s + post for s in _dict[cardset]]
+            cardset = cardset_cb.currentIndex()
+            _dict = {0:['marvel-player-back','marvel-encounter-back',
+                        'marvel-villain-back'],
+                     2:['promo-player-back', 'promo-encounter-back',
+                         'promo-villain-back'],
+                     3:['fan-back-player', 'fan-back-encounter',
+                        'fan-back-villain']}
+            if cardset in _dict:
+                pre = 'https://hallofheroeshome.files.wordpress.com/2021/02/'
+                post = '.png'
+                urls = [pre + s + post for s in _dict[cardset]]
+            elif cardset == 1:
+                urls = [('https://cdn.discordapp.com/attachments/64131799'
+                         '9168454685/869297402912321616/trasera_azul.png'),
+                        ('https://cdn.discordapp.com/attachments/64131799'
+                         '9168454685/869297401549160469/trasera_naranja.png'),
+                        ('https://cdn.discordapp.com/attachments/64131799'
+                         '9168454685/869297402161537024/trasera_lila.png')]
+            else:
+                raise RuntimeError('Shold never happen')
 
             try:
                 # Resolve local file names for images
                 conf = LcgAppResources(appname='mcdeck', author='Cloudberries')
                 conf_dir = conf.user_data_dir()
-                back_dir = os.path.join(conf_dir, 'card_back', cardset)
-                names = ('player_back.png', 'encounter_back.png',
-                         'villain_back.png')
-                img_paths = [os.path.join(back_dir, name) for name in names]
+                back_dir = os.path.join(conf_dir, 'card_back')
+                img_paths = []
+                for url in urls:
+                    _basename = hashlib.sha256(url.encode('utf-8')).hexdigest()
+                    _path = os.path.join(back_dir, _basename)
+                    img_paths.append(f'{_path}.png')
 
                 # Download images if they do not already exist
                 for img_path in img_paths:
@@ -573,9 +654,13 @@ class MCDeck(QtWidgets.QMainWindow):
                 settings.card_back_file_player = img_paths[0]
                 settings.card_back_file_encounter = img_paths[1]
                 settings.card_back_file_villain = img_paths[2]
-                settings.player_bleed_mm = 2
-                settings.encounter_bleed_mm = 2
-                settings.villain_bleed_mm = 2
+                if cardset == 1:
+                    _bleed = 0
+                else:
+                    _bleed = 2
+                settings.player_bleed_mm = _bleed
+                settings.encounter_bleed_mm = _bleed
+                settings.villain_bleed_mm = _bleed
 
                 _i = QtWidgets.QMessageBox.information
                 _msg = ('Settings have been updated to use the images as the '
@@ -592,6 +677,84 @@ class MCDeck(QtWidgets.QMainWindow):
                 err('Operation error', f'Could not update images: {e}')
 
     @QtCore.Slot()
+    def menu_octgn_enable(self):
+        if not MCDeck.deck._octgn:
+            MCDeck.deck._octgn = octgn.OctgnCardSetData(name='')
+            for i, card in enumerate(MCDeck.deck._card_list_copy):
+                card._octgn = octgn.OctgnCardData(name='')
+            self.enableOctgn(True)
+
+    @QtCore.Slot()
+    def menu_octgn_edit(self):
+        MCDeck.deck._undo.add_undo_level(hide=False)
+        title = 'Edit OCTGN metadata (entire deck)'
+        if octgn.OctgnDataDialog(self, MCDeck.deck, title=title).exec():
+            MCDeck.deck._deck_changed()
+        else:
+            MCDeck.deck._undo_action(deselect=False, purge=True)
+
+    @QtCore.Slot()
+    def menu_octgn_edit_selected(self):
+        cards = MCDeck.deck.selected_cards()
+        if cards:
+            MCDeck.deck._undo.add_undo_level(hide=False)
+            t = f'Edit OCTGN metadata ({len(cards)} selected cards)'
+            if octgn.OctgnDataDialog(self, MCDeck.deck, cards, title=t).exec():
+                MCDeck.deck._deck_changed()
+            else:
+                MCDeck.deck._undo_action(deselect=False, purge=True)
+
+    @QtCore.Slot()
+    def menu_octgn_delete(self):
+        if MCDeck.deck._octgn:
+                _dfun = QtWidgets.QMessageBox.question
+                _keys = QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel
+                _msg = ('This operation removes all current Octgn metadata '
+                        'with no undo possible. Proceed with removal?')
+                k = _dfun(self, 'Confirm Octgn data removal', _msg, _keys)
+                if k == QtWidgets.QMessageBox.Ok:
+                    MCDeck.deck._octgn = None
+                    MCDeck.deck._undo.clear()
+                    self.enableOctgn(False)
+
+    @QtCore.Slot()
+    def menu_octgn_install(self):
+        err = lambda s1, s2: ErrorDialog(self, s1, s2).exec()
+        try:
+            _f = octgn.OctgnCardSetData.install_octgn_card_set
+            success = _f(self, MCDeck.deck, MCDeck.settings)
+        except Exception as e:
+            err('OCTGN install error', f'Error: {e}')
+        else:
+            if success:
+                _i = QtWidgets.QMessageBox.information
+                _name = MCDeck.deck._octgn.name
+                _id = MCDeck.deck._octgn.set_id
+                _msg = (f'Card set "{_name}" with GUID {_id} was '
+                        'successfully installed.')
+                _i(self, 'Successful installation', _msg)
+            else:
+                err('Installation failed', 'Installation did not complete')
+
+    @QtCore.Slot()
+    def menu_octgn_uninstall(self):
+        err = lambda s1, s2: ErrorDialog(self, s1, s2).exec()
+        try:
+            _f = octgn.OctgnCardSetData.uninstall_octgn_card_set
+            success = _f(self, MCDeck.deck)
+        except Exception as e:
+            err('OCTGN uninstall error', f'Error: {e}')
+        else:
+            if success:
+                _i = QtWidgets.QMessageBox.information
+                _id = MCDeck.deck._octgn.set_id
+                _msg = (f'Card set with GUID {_id} was '
+                        'successfully uninstalled.')
+                _i(self, 'Successful uninstall', _msg)
+            else:
+                err('Uninstall failed', 'Uninstall did not complete')
+
+    @QtCore.Slot()
     def deckHasSelection(self, status):
         """Update to whether deck has a current selection of cards."""
         for w in (self.__cut_action, self.__copy_action, self.__set_player,
@@ -601,6 +764,9 @@ class MCDeck(QtWidgets.QMainWindow):
                   self.__rotate_half_circle, self.__rotate_clockwise,
                   self.__rotate_anti_clockwise, self.__delete_cards):
             w.setEnabled(status)
+        _enable_octgn_edit_sel = bool(MCDeck.deck._octgn and status)
+        self._octgn_edit_selected.setEnabled(_enable_octgn_edit_sel)
+
         selected_cards = MCDeck.deck.selected_cards()
         if len(selected_cards) == 1:
             self.__copy_front.setEnabled(True)
@@ -666,6 +832,12 @@ class MCDeck(QtWidgets.QMainWindow):
         app is not really rocket science - you can combine cards into decks, you
         can open and save decks, and you can export to printable PDFs or
         card sets for Tabletop Simulator.</p>
+
+        <p>Many app operations act on a card <em>selection</em>. A single card
+        can be selected by left-clicking on it. If the ctrl (or meta) key is
+        held while clicking, the card's selection status is toggled. If the
+        shift key is held, then the selection is extended as a range to
+        include the clicked card.</p>
 
         <p>Decks can be saved to a *.zip file, which will include a card index
         on the top level (in a file "mcdeck.mcd") as well as card images in
@@ -757,6 +929,15 @@ class MCDeck(QtWidgets.QMainWindow):
         else:
             self.setWindowTitle(f'MCdeck: {name}')
 
+    @QtCore.Slot()
+    def enableOctgn(self, enable):
+        for w in (self._octgn_edit, self._octgn_delete, self._octgn_install,
+                  self._octgn_uninstall, self.__export_octgn_action):
+            w.setEnabled(enable)
+        self._octgn_enable.setEnabled(not enable)
+        _enable_octgn_edit_sel = bool(MCDeck.deck._octgn and enable)
+        self._octgn_edit_selected.setEnabled(_enable_octgn_edit_sel)
+
 
 class Deck(QtWidgets.QScrollArea):
     """View for a deck of cards."""
@@ -765,6 +946,7 @@ class Deck(QtWidgets.QScrollArea):
     hasClipboard = QtCore.Signal(bool)  # Has cards in clipboard
     deckChanged = QtCore.Signal(bool)   # Deck is changed since initial/save
     filenameChange = QtCore.Signal(str) # Project filename changed
+    deckHasOctgn = QtCore.Signal(bool)  # True if deck has octgn metadata
 
     def __init__(self):
         super().__init__()
@@ -778,10 +960,12 @@ class Deck(QtWidgets.QScrollArea):
         self._update_widget_card_size(reset=False)
 
         self._undo = DeckUndoBuffer(self)
-        self._unsaved = True    # True if current deck state is "unsaved"
+        self._unsaved = True     # True if current deck state is "unsaved"
         self._save_file = None   # Name of file of current project
         self.filenameChange.emit('')
         self.__clipboard = []    # Cards which have been cut or copied
+
+        self._octgn = None       # OCTGN card set data for the deck (if set)
 
         self.__view = QtWidgets.QWidget()
         self.setWidget(self.__view)
@@ -808,6 +992,8 @@ class Deck(QtWidgets.QScrollArea):
             self.__cards.append(card)
         else:
             self.__cards.insert(pos, card)
+        if self._octgn and card._octgn is None:
+            card._octgn = octgn.OctgnCardData(name='')
         card.cardSelected.connect(self.cardSingleSelected)
         card.cardCtrlSelected.connect(self.cardCtrlSelected)
         card.cardShiftSelected.connect(self.cardShiftSelected)
@@ -924,32 +1110,10 @@ class Deck(QtWidgets.QScrollArea):
 
         _dlg = QtWidgets.QFileDialog.getOpenFileName
         _flt = 'Zip archive (*.zip);;MCD index (*.mcd)'
-        while True:
-            path, cat = _dlg(self, 'Open MCD index or archive containing '
-                             'an MCD index', filter=_flt)
-            zf = None
-            if not path:
-                return
-            elif not os.path.exists(path):
-                err('No such file', f'{path} does not exist')
-            elif path.lower().endswith('.zip'):
-                zf = zipfile.ZipFile(path, 'r')
-                for s in zf.namelist():
-                    if s.lower() == 'mcdeck.mcd':
-                        mcd = zf.read(s).decode('utf-8')
-                        break
-                else:
-                    err('Missing mcdeck.mcd', 'Zip file does not include '
-                        'required card index file mcdeck.mcd in the top dir')
-                break
-            elif path.lower().endswith('.mcd'):
-                mcd = open(path, 'r').read()
-                mcd_dir = os.path.dirname(os.path.realpath(path))
-                break
-            else:
-                err('Invalid file', 'File must be .zip or .mcd')
-
-        self._open(path)
+        path, cat = _dlg(self, 'Open MCD index or archive containing '
+                         'an MCD index', filter=_flt)
+        if path:
+            self._open(path)
 
     @QtCore.Slot()
     def saveDeck(self):
@@ -975,7 +1139,7 @@ class Deck(QtWidgets.QScrollArea):
                 tfile.close()
                 try:
                     self._save(tfile.name)
-                except Exception as e:
+                except Exception:
                     os.remove(tfile.name)
                     err('Save error', f'Could not save to {self._save_file}')
                 else:
@@ -984,11 +1148,10 @@ class Deck(QtWidgets.QScrollArea):
 
     @QtCore.Slot()
     def saveDeckAs(self):
-        err = lambda s1, s2: ErrorDialog(self, s1, s2).exec()
-
         _get = QtWidgets.QFileDialog.getSaveFileName
         _filter='Zip files (*.zip)'
-        path, _f = _get(self, 'Select deck filename', filter=_filter)
+        d = os.path.dirname(self._save_file) if self._save_file else ''
+        path, _f = _get(self, 'Select deck filename', dir=d, filter=_filter)
         if not path:
             return
 
@@ -1039,6 +1202,75 @@ class Deck(QtWidgets.QScrollArea):
     def exportTts(self):
         """Export as images for importing into Tabletop Simulator."""
         TTSExportDialog(self, MCDeck.settings, self.__cards).exec()
+
+    @QtCore.Slot()
+    def exportOctgn(self):
+        """Export deck as Octgn card set"""
+        err = lambda s1, s2: ErrorDialog(self, s1, s2).exec()
+        if not self._octgn:
+            raise RuntimeError('Should never happen')
+
+        if not self.__cards:
+            _msg = 'The deck has no cards to export'
+            err(self, 'Nothing to export', _msg)
+            return
+
+        if not octgn.OctgnCardSetData.validate_legal_deck(self):
+            _msg = 'The deck has no cards to export'
+            err(self, 'Cannot export Octgn data', _msg)
+            return
+
+        # Get a .zip filename for saving
+        _get = QtWidgets.QFileDialog.getSaveFileName
+        d = os.path.dirname(self._save_file) if self._save_file else ''
+        path, _f = _get(self, 'Select .zip filename for export', dir=d,
+                        filter='Zip files (*.zip)')
+        if not path:
+            return
+
+        try:
+            _exp = octgn.OctgnCardSetData.export_octgn_card_set
+            with zipfile.ZipFile(path, 'w') as zf:
+                _exp(self, zf, MCDeck.settings)
+        except Exception as e:
+            err(self, 'Octgn export error', f'Unable to export: {e}')
+        else:
+            info = QtWidgets.QMessageBox(self, 'Successful export', '')
+            text = f'''<p>An OCTGN card set with GUID
+            <tt>{self._octgn.set_id}</tt> and the name "{self._octgn.name}" was
+            exported as a .zip file.</p>
+
+            <p>The card set can be installed to OCTGN by unpacking the .zip
+            file into the OCTGN installation's <tt>Data/</tt> directory. This
+            directory normally has the path
+            <tt>~/AppData/Local/Programs/OCTGN/Data/</tt>.</p>
+
+            <p>The installed custom cards can be used with
+            <a href="https://twistedsistem.wixsite.com/octgnmarvelchampions/">MC: TCG
+            in OCTGN</a>. Decks can be made with the OCTGN deck editor. In
+            order to be able to use a generated .o8d deck, it needs to
+            be copied into the <tt>Data/</tt> subdirectory
+            <tt>GameDatabase/055c536f-adba-4bc2-acbf-9aefb9756046/FanMade/</tt>.
+            </p>
+
+            <p>Deck(s) created with the deck editor can be added to the .zip
+            file by creating the .zip file directory
+            <tt>GameDatabase/055c536f-adba-4bc2-acbf-9aefb9756046/FanMade/</tt>
+            and adding the .o8d file(s) to that directory.</p>
+
+            <p>To uninstall the card set, remove the following <tt>Data/</tt>
+            subdirectories:
+            </p>
+            <ul><li>
+            <tt>GameDatabase/055c536f-adba-4bc2-acbf-9aefb9756046/Sets/{self._octgn.set_id}/</tt>
+            </li><li>
+            <tt>ImageDatabase/055c536f-adba-4bc2-acbf-9aefb9756046/Sets/{self._octgn.set_id}/</tt>.
+            </li><ul>
+            '''
+            info.setInformativeText(text)
+            info.setStandardButtons(QtWidgets.QMessageBox.Ok)
+            info.setDefaultButton(QtWidgets.QMessageBox.Ok)
+            info.exec()
 
     @QtCore.Slot()
     def cardSingleSelected(self, widget):
@@ -1473,11 +1705,30 @@ class Deck(QtWidgets.QScrollArea):
     def removeBackImage(self):
         """Remove the back image set on the cards."""
         if self.has_selected:
+            # Check if any selected card has alt side OCTGN data
+            _has_octgn_alt = False
+            for card in self.__cards:
+                if card.selected and card._octgn and card._octgn.alt_data:
+                    _has_octgn_alt = True
+                    break
+            if _has_octgn_alt:
+                _dfun = QtWidgets.QMessageBox.question
+                _msg = ('One or more selected card(s) has OCTGN alt side '
+                        'metadata. Removing the back image will also remove '
+                        'that metadata. Proceed with removing back image(s)?')
+                _k = QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel
+                confirm = _dfun(self, 'Confirm removal', _msg, _k)
+                if confirm == QtWidgets.QMessageBox.Cancel:
+                    return
+
+            # Remove back images (and any Octgn alt data)
             self._undo.add_undo_level()
             for i, card in enumerate(self.__cards):
                 if card.selected:
                     card = self._copy_card(card)
                     card.set_back_image(None)
+                    if card._octgn:
+                        card._octgn._alt_data = None
                     card.select(True)
                     self.__cards[i] = card
             self._deck_changed()
@@ -1574,12 +1825,7 @@ class Deck(QtWidgets.QScrollArea):
 
     @QtCore.Slot()
     def undoAction(self):
-        self.hide_cards()
-        self.__cards = self._undo.undo()
-        for card in self.__cards:
-            card.select(False)
-        self._deck_changed()
-        self.reset()
+        self._undo_action()
 
     @QtCore.Slot()
     def redoAction(self):
@@ -1594,6 +1840,15 @@ class Deck(QtWidgets.QScrollArea):
     def _card_list_copy(self):
         """A copy of the current list of cards."""
         return self.__cards.copy()
+
+    def _undo_action(self, deselect=True, purge=False):
+        self.hide_cards()
+        self.__cards = self._undo.undo(purge=purge)
+        if deselect:
+            for card in self.__cards:
+                card.select(False)
+        self._deck_changed()
+        self.reset()
 
     def _update_widget_card_size(self, width=None, reset=True):
         """Updates card widget size to the specified width (in pixels).
@@ -1630,6 +1885,7 @@ class Deck(QtWidgets.QScrollArea):
             self.reset()
 
     def _save(self, filename):
+        err = lambda s1, s2: ErrorDialog(self, s1, s2).exec()
         self.__operation_cancelled = False
         dlg = QtWidgets.QProgressDialog('Saving card(s)', 'Cancel',
                                         0, len(self.__cards))
@@ -1641,66 +1897,86 @@ class Deck(QtWidgets.QScrollArea):
                 err('Operation cancelled', 'Operation cancelled by user.')
                 raise LcgException('Operation was cancelled')
 
-        try:
-            zf = zipfile.ZipFile(filename, 'w')
-            mcd = ('# MCdeck definition of a custom cards MC:TCG deck.\n'
-                   '# See https://pypi.org/project/mcdeck/ for info.\n')
-
-            mode = None
-            n_p, n_e, n_v, n_s = 0, 0, 0, 0
+        # Generate OCTGN save data (if any)
+        if self._octgn:
+            set_info = self._octgn
+            card_data_l = []
             for card in self.__cards:
-                _mode = None
-                _next = None
-                if card.ctype == Card.type_player:
-                    _mode = 'player'
-                    n_p += 1
-                    _next = n_p
-                elif card.ctype == Card.type_encounter:
-                    _mode = 'encounter'
-                    n_e += 1
-                    _next = n_e
-                elif card.ctype == Card.type_villain:
-                    _mode = 'villain'
-                    n_v += 1
-                    _next = n_v
+                c_data = card._octgn
+                if c_data.alt_data and not card.specified_back_img:
+                    _msg = 'Card(s) with no back img have alt card OCTGN data'
+                    err('Metadata problem', _msg)
+                    return
+                card_data_l.append(c_data)
+            octgn_file_s = set_info.to_str(card_data_l)
+        else:
+            octgn_file_s = None
 
-                if _mode:
-                    # Store player, encounter or villain card
-                    if _mode != mode:
-                        mcd += f'\n{_mode}:\n'
-                        mode = _mode
-                    img = LcgImage(card.front_img)
-                    data = img.saveToBytes(format='PNG')
-                    path = os.path.join(mode, f'img_{_next:05}.png')
-                    zf.writestr(path, data)
-                    mcd += f'  {to_posix_path(path)}\n'
-                    dlg_add()
-                else:
-                    # Single card
-                    mode = None
-                    n_s += 1
-                    if card.back_img and card.back_bleed > 0:
-                        mcd += f'\nsingle [back_bleed={card.back_bleed}]:\n'
-                    else:
-                        mcd += '\nsingle:\n'
-                    img = LcgImage(card.front_img)
-                    data = img.saveToBytes(format='PNG')
-                    if card.back_img:
-                        path = os.path.join('single', f'img_{n_s:05}_A.png')
-                    else:
-                        path = os.path.join('single', f'img_{n_s:05}.png')
-                    zf.writestr(path, data)
-                    mcd += f'  {to_posix_path(path)}\n'
-                    if card.back_img:
-                        img = LcgImage(card.back_img)
+        try:
+            with zipfile.ZipFile(filename, 'w') as zf:
+                mcd = ('# MCdeck definition of a custom cards MC:TCG deck.\n'
+                       '# See https://pypi.org/project/mcdeck/ for info.\n')
+
+                mode = None
+                n_p, n_e, n_v, n_s = 0, 0, 0, 0
+                for card in self.__cards:
+                    _mode = None
+                    _next = None
+                    if card.ctype == Card.type_player:
+                        _mode = 'player'
+                        n_p += 1
+                        _next = n_p
+                    elif card.ctype == Card.type_encounter:
+                        _mode = 'encounter'
+                        n_e += 1
+                        _next = n_e
+                    elif card.ctype == Card.type_villain:
+                        _mode = 'villain'
+                        n_v += 1
+                        _next = n_v
+
+                    if _mode:
+                        # Store player, encounter or villain card
+                        if _mode != mode:
+                            mcd += f'\n{_mode}:\n'
+                            mode = _mode
+                        img = LcgImage(card.front_img)
                         data = img.saveToBytes(format='PNG')
-                        path = os.path.join('single', f'img_{n_s:05}_B.png')
+                        path = os.path.join(mode, f'img_{_next:05}.png')
                         zf.writestr(path, data)
                         mcd += f'  {to_posix_path(path)}\n'
-                    dlg_add()
+                        dlg_add()
+                    else:
+                        # Single card
+                        mode = None
+                        n_s += 1
+                        if card.back_img and card.back_bleed > 0:
+                            mcd += f'\nsingle [back_bleed={card.back_bleed}]:\n'
+                        else:
+                            mcd += '\nsingle:\n'
+                        img = LcgImage(card.front_img)
+                        data = img.saveToBytes(format='PNG')
+                        if card.back_img:
+                            path = os.path.join('single', f'img_{n_s:05}_A.png')
+                        else:
+                            path = os.path.join('single', f'img_{n_s:05}.png')
+                        zf.writestr(path, data)
+                        mcd += f'  {to_posix_path(path)}\n'
+                        if card.back_img:
+                            img = LcgImage(card.back_img)
+                            data = img.saveToBytes(format='PNG')
+                            path = os.path.join('single', f'img_{n_s:05}_B.png')
+                            zf.writestr(path, data)
+                            mcd += f'  {to_posix_path(path)}\n'
+                        dlg_add()
 
-            # Write the card definition file to the top level of the zipfile
-            zf.writestr('mcdeck.mcd', mcd)
+                # Write the card definition file to the top level of the zipfile
+                zf.writestr('mcdeck.mcd', mcd)
+
+                # If the deck has OCTGN metadata, save it
+                if octgn_file_s:
+                    zf.writestr('octgn.txt', octgn_file_s)
+
         except Exception as e:
             try:
                 os.remove(filename)
@@ -1714,7 +1990,7 @@ class Deck(QtWidgets.QScrollArea):
     def _open(self, filename):
         """Opens file (must be a .zip or .mcd file).
 
-        Returns True if successfull, otherwise False.
+        Returns True if successful, otherwise False.
 
         """
         err = lambda s1, s2: ErrorDialog(self, s1, s2).exec()
@@ -1740,6 +2016,28 @@ class Deck(QtWidgets.QScrollArea):
         else:
             _msg = 'File must be .zip or .mcd'
             err('Invalid file', _msg)
+            return False
+
+        # If OCTGN metadata file present, decode for later
+        octgn_data = None
+        try:
+            if zf:
+                for s in zf.namelist():
+                    if s.lower() == 'octgn.txt':
+                        _s = zf.read(s).decode('utf-8')
+                        octgn_data = octgn.OctgnCardSetData.from_str(_s)
+                        break
+            else:
+                _dir = os.path.dirname(filename)
+                octgn_file = os.path.join(_dir, 'octgn.txt')
+                if os.path.isfile(octgn_file):
+                    with open(octgn_file, 'r') as f:
+                        _s = f.read()
+                    octgn_data = octgn.OctgnCardSetData.from_str(_s)
+        except Exception as e:
+            _msg = ('Metadata file "octgn.txt" present but could '
+                    f'not parse its contents: {e}')
+            err('Metadata error (OCTGN)', _msg)
             return False
 
         # Clear current deck
@@ -1898,7 +2196,7 @@ class Deck(QtWidgets.QScrollArea):
                             raise RuntimeError('Should never happen')
                         try:
                             img = download_image(img_url)
-                        except Exception as e:
+                        except Exception:
                             err('Image load error',
                                 f'Could not open image {img_url}')
                             raise LcgException('Image load error')
@@ -2028,7 +2326,7 @@ class Deck(QtWidgets.QScrollArea):
                                 raise RuntimeError('Should never happen')
                             try:
                                 img = download_image(img_url)
-                            except Exception as e:
+                            except Exception:
                                 err('Image load error',
                                     f'Could not open image from {img_url}')
                                 raise LcgException('Image load error')
@@ -2044,12 +2342,31 @@ class Deck(QtWidgets.QScrollArea):
                 else:
                     err('MCD file error', f'Syntax error line {num}')
                     raise LcgException('Invalid MCD index file')
+
+            # If OCTGN metadata is present, add metadata to cards
+            if octgn_data:
+                card_set_data, card_data_list = octgn_data
+                if len(self.__cards) != len(card_data_list):
+                    raise LcgException('Number of cards does not match number '
+                                       'of cards with OCTGN metadata')
+                self._octgn = card_set_data
+                for card, data in zip(self.__cards, card_data_list):
+                    if data.alt_data and not card.specified_back_img:
+                        _msg = ('There is/are card(s) with alternate card '
+                                'OCTGN metadata without a card back side')
+                        raise LcgException(_msg)
+                    card._octgn = data
+                self.deckHasOctgn.emit(True)
+            else:
+                self.deckHasOctgn.emit(False)
+
             self.reset()
-        except LcgException as e:
+        except LcgException:
             # Could not load deck, clear the partially loaded deck
             for card in self.__cards:
                 card.hide()
             self.__cards = []
+            self._octgn = None
             self.reset()
             return False
         else:
@@ -2158,6 +2475,9 @@ class Card(QtWidgets.QWidget):
         self.__margin = 0
         self.__cropped_back = None
 
+        self._octgn = None         # OCTGN card data for the card (if set)
+        self._octgn_back = None    # OCTGN card data for the card back (if set)
+
         self._selected = False
 
         # Palette for background color when selected
@@ -2227,6 +2547,8 @@ class Card(QtWidgets.QWidget):
         """Generate a copy of this card."""
         card = Card(self.__front, self.__back, self.__back_bleed, self.__type,
                     self.parentWidget())
+        if self._octgn:
+            card._octgn = self._octgn.copy()
         card.setCardWidth(self.width())
         card.move(self.pos())
         return card
@@ -2550,10 +2872,25 @@ class CardTypeDialog(QtWidgets.QDialog):
 
 def main():
     app = QtWidgets.QApplication([sys.argv[0]])
+    app.setApplicationName('MCdeck')
+    app.setApplicationVersion(mcdeck.__version__)
+
+    # Set up ArgumentParser for parsing command line arguments
+    _desc = 'MCdeck - Export custom cards for Marvel Champions: The Card Game'
+    parser = ArgumentParser(description=_desc)
+    parser.add_argument('deck', metavar='deck_file', nargs='?', type=str,
+                        help='source deck to load (.zip or .mcd)')
+    parser.add_argument('--version', action='version',
+                        version=f'%(prog)s {mcdeck.__version__}')
+    args = parser.parse_args(sys.argv[1:])
+    deck_path = args.deck
 
     view = MCDeck()
     view.resize(800, 600)
     view.show()
+    if deck_path:
+        view.deck._open(deck_path)
+        view.deck._undo.clear()
 
     sys.exit(app.exec())
 

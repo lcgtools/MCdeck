@@ -98,7 +98,17 @@ def download_image(url):
     :raises:    an exception if URL could not be downloaded as an image
 
     """
-    response = urllib.request.urlopen(url)
+    try:
+        response = urllib.request.urlopen(url)
+    except urllib.error.HTTPError:
+        # If download fails, try again with fake headers
+        _ua_val = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWeb'
+                   'Kit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari'
+                   '/537.36')
+        headers = {'User-Agent': _ua_val}
+        request = urllib.request.Request(url, headers=headers)
+        response = urllib.request.urlopen(request)
+
     if isinstance(response, http.client.HTTPResponse):
         ctype = response.getheader('Content-Type', '')
         mime_types = ctype.split(';')
@@ -280,11 +290,12 @@ class DeckUndoBuffer(QtCore.QObject):
         self.haveUndo.emit(True)
         self.haveRedo.emit(False)
 
-    def undo(self, show=True):
+    def undo(self, show=True, purge=False):
         """Return card list for current undo level, and advance undo position.
 
-        :param show: if True call show() on all returned cards
-        :return:     list of cards, or None if there are no more undo levels
+        :param  show: if True call show() on all returned cards
+        :param purge: if True, purge redo buffer above current undo level
+        :return:      list of cards, or None if there are no more undo levels
 
         If this is the first undo operation, then a snapshot of the current
         state is made for later redo() recovery.
@@ -295,6 +306,11 @@ class DeckUndoBuffer(QtCore.QObject):
                 self.__pre_undo_cards = self.__deck._card_list_copy
             cards = self.__buffer[self.__buffer_pos]
             self.__buffer_pos += 1
+
+            if purge:
+                self.__buffer = self.__buffer[self.__buffer_pos:]
+                self.__buffer_pos = 0
+                self.__pre_undo_cards = None
 
             self.haveUndo.emit(self.can_undo())
             self.haveRedo.emit(self.can_redo())
