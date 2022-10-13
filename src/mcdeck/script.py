@@ -39,6 +39,7 @@ from lcgtools.graphics import LcgCardPdfGenerator, LcgImage
 from lcgtools.util import LcgAppResources
 
 import mcdeck
+from mcdeck.marvelcdb import MarvelCDB
 import mcdeck.octgn as octgn
 from mcdeck.settings import Settings, SettingsDialog
 from mcdeck.tts import TTSExportDialog
@@ -54,10 +55,12 @@ class MCDeck(QtWidgets.QMainWindow):
 
     settings = Settings()
     conf = None
+    root = None
     deck = None
     game = None
     _front_on_top = True
     _clipboard = None
+    _export_pdf_action = None
 
     def __init__(self):
         super().__init__()
@@ -67,6 +70,10 @@ class MCDeck(QtWidgets.QMainWindow):
 
         # Set up main window layout with a Deck as the single contained widget
         deck = Deck()
+        if MCDeck.root:
+            raise LcgException('Cannot only instantiate one single MCDeck')
+        else:
+            MCDeck.root = self
         MCDeck.deck = deck
         layout = QtWidgets.QGridLayout()
         layout.addWidget(deck, 0, 0)
@@ -102,23 +109,29 @@ class MCDeck(QtWidgets.QMainWindow):
         action.setStatusTip('Save the deck, selecting a new filename')
         self.__save_as_action = action
 
-        action = QtGui.QAction('&PDF', self)
+        action = QtGui.QAction('&PDF ...', self)
         action.setShortcut('Ctrl+P')
         action.triggered.connect(deck.exportPdf)
         action.setStatusTip('Export deck as a printable PDF document')
-        export_pdf_action = action
+        self._export_pdf_action = action
 
-        action = QtGui.QAction('&TTS', self)
+        action = QtGui.QAction('&TTS ...', self)
         action.setShortcut('Ctrl+T')
         action.triggered.connect(deck.exportTts)
         action.setStatusTip('Export Tabletop Simulator deck front/back images')
         export_tts_action = action
 
-        action = QtGui.QAction('&Octgn', self)
+        action = QtGui.QAction('&Card set ...', self)
         action.setEnabled(False)
-        action.triggered.connect(deck.exportOctgn)
+        action.triggered.connect(deck.exportOctgnCardSet)
         action.setStatusTip('Export card set for OCTGN')
-        self.__export_octgn_action = action
+        self.__export_octgn_card_set_action = action
+
+        action = QtGui.QAction('&Deck ...', self)
+        action.setEnabled(False)
+        action.triggered.connect(deck.exportOctgnDeck)
+        action.setStatusTip('Export OCTGN .o8d deck')
+        self.__export_octgn_deck_action = action
 
         action = QtGui.QAction('&Exit', self)
         action.setShortcut('Ctrl+Q')
@@ -253,32 +266,38 @@ class MCDeck(QtWidgets.QMainWindow):
         select_none_action = action
 
         action = QtGui.QAction('Set &player type', self)
-        action.setShortcut('Ctrl+Shift+P')
+        action.setShortcut('Ctrl+4')
         action.setStatusTip('Set card type to player')
         action.setEnabled(False)
         action.triggered.connect(deck.setPlayerType)
         self.__set_player = action
 
         action = QtGui.QAction('Set &encounter type', self)
-        action.setShortcut('Ctrl+Shift+E')
+        action.setShortcut('Ctrl+5')
         action.setStatusTip('Set card type to encounter')
         action.setEnabled(False)
         action.triggered.connect(deck.setEncounterType)
         self.__set_encounter = action
 
         action = QtGui.QAction('Set &villain type', self)
-        action.setShortcut('Ctrl+Shift+V')
+        action.setShortcut('Ctrl+6')
         action.setStatusTip('Set card type to villain')
         action.setEnabled(False)
         action.triggered.connect(deck.setVillainType)
         self.__set_villain = action
 
         action = QtGui.QAction('Set &unspecified type', self)
-        action.setShortcut('Ctrl+Shift+U')
+        action.setShortcut('Ctrl+7')
         action.setStatusTip('Set card type to unspecified')
         action.setEnabled(False)
         action.triggered.connect(deck.setUnspecifiedType)
         self.__set_unspecified = action
+
+        action = QtGui.QAction('Load &front image ...', self)
+        action.setStatusTip('Open image file as new front side')
+        action.setEnabled(False)
+        action.triggered.connect(deck.setFrontImage)
+        self.__set_front_image = action
 
         action = QtGui.QAction('Load &back image ...', self)
         action.setStatusTip('Open image file as new back side')
@@ -330,6 +349,18 @@ class MCDeck(QtWidgets.QMainWindow):
         action.triggered.connect(self.menu_download_card_backs)
         self.__download_card_backs = action
 
+        action = QtGui.QAction('Import card ...', self)
+        action.setShortcut('Ctrl+M')
+        action.setStatusTip('Import card from marvelcdb.com')
+        action.triggered.connect(self.menu_mcdb_import_card)
+        mcdb_import_card = action
+
+        action = QtGui.QAction('Import deck ...', self)
+        action.setShortcut('Shift+Ctrl+M')
+        action.setStatusTip('Import deck from marvelcdb.com')
+        action.triggered.connect(self.menu_mcdb_import_deck)
+        mcdb_import_deck = action
+
         action = QtGui.QAction('Enable', self)
         action.setStatusTip('Enable OCTGN metadata for deck')
         action.triggered.connect(self.menu_octgn_enable)
@@ -354,6 +385,17 @@ class MCDeck(QtWidgets.QMainWindow):
         action.setEnabled(False)
         action.triggered.connect(self.menu_octgn_delete)
         self._octgn_delete = action
+
+        action = QtGui.QAction('Imp&ort card(s) ...', self)
+        action.setShortcut('Shift+Ctrl+O')
+        action.setStatusTip('Import card(s) from local OCTGN database')
+        action.triggered.connect(self.menu_octgn_import)
+        self._octgn_import = action
+
+        action = QtGui.QAction('Import from .o8d ...', self)
+        action.setStatusTip('Import card(s) from local OCTGN database')
+        action.triggered.connect(self.menu_octgn_import_o8d)
+        self._octgn_import_o8d = action
 
         action = QtGui.QAction('&Install deck as card set', self)
         action.setStatusTip('Install the current deck directly into OCTGN')
@@ -396,9 +438,11 @@ class MCDeck(QtWidgets.QMainWindow):
         file_menu.addAction(self.__save_action)
         file_menu.addAction(self.__save_as_action)
         export_menu = file_menu.addMenu('&Export')
-        export_menu.addAction(export_pdf_action)
+        export_menu.addAction(self._export_pdf_action)
         export_menu.addAction(export_tts_action)
-        export_menu.addAction(self.__export_octgn_action)
+        export_octgn_menu = export_menu.addMenu('&Octgn')
+        export_octgn_menu.addAction(self.__export_octgn_card_set_action)
+        export_octgn_menu.addAction(self.__export_octgn_deck_action)
         file_menu.addSeparator()
         file_menu.addAction(exit_action)
 
@@ -436,6 +480,7 @@ class MCDeck(QtWidgets.QMainWindow):
         selection_menu.addAction(self.__set_villain)
         selection_menu.addAction(self.__set_unspecified)
         selection_menu.addSeparator()
+        selection_menu.addAction(self.__set_front_image)
         selection_menu.addAction(self.__set_back_image)
         selection_menu.addAction(self.__use_front_as_back)
         selection_menu.addAction(self.__remove_back_image)
@@ -448,11 +493,17 @@ class MCDeck(QtWidgets.QMainWindow):
 
         tools_menu = menu_bar.addMenu('&Tools')
         tools_menu.addAction(self.__download_card_backs)
+        mcdb_menu = tools_menu.addMenu('&MarvelCDB')
+        mcdb_menu.addAction(mcdb_import_card)
+        mcdb_menu.addAction(mcdb_import_deck)
         octgn_menu = tools_menu.addMenu('&Octgn')
         octgn_menu.addAction(self._octgn_enable)
         octgn_menu.addAction(self._octgn_edit)
         octgn_menu.addAction(self._octgn_edit_selected)
         octgn_menu.addAction(self._octgn_delete)
+        octgn_menu.addSeparator()
+        octgn_menu.addAction(self._octgn_import)
+        octgn_menu.addAction(self._octgn_import_o8d)
         octgn_menu.addSeparator()
         octgn_menu.addAction(self._octgn_install)
         octgn_menu.addAction(self._octgn_uninstall)
@@ -509,8 +560,8 @@ class MCDeck(QtWidgets.QMainWindow):
             url, = mime.urls()
             if url.isLocalFile():
                 path = url.toLocalFile()
-                if (path.lower().endswith('.zip') or
-                    path.lower().endswith('.mcd')):
+                _ext = path[-4:].lower()
+                if _ext in ('.zip', '.mcd', '.o8d'):
                     if MCDeck.deck.has_cards():
                         _q = QtWidgets.QMessageBox.question
                         _k = QtWidgets.QMessageBox.Open
@@ -520,8 +571,21 @@ class MCDeck(QtWidgets.QMainWindow):
                         btn = _q(self, 'Discard current deck?', _msg, _k)
                         if btn == QtWidgets.QMessageBox.Cancel:
                             return
-                    MCDeck.deck._open(path)
-                    return
+                    if _ext in ('.zip', '.mcd'):
+                        MCDeck.deck._open(path)
+                        return
+                    else:
+                        MCDeck.deck.clear(undo=True)
+                        try:
+                            num = octgn.load_o8d_cards(path, parent=self)
+                        except Exception as e:
+                            ErrorDialog(self, '.o8d import error', 'Could not '
+                                        f'import .o8d file: {e}').exec()
+                            MCDeck.deck._undo_action(deselect=False, purge=True)
+                        else:
+                            MCDeck.deck._deck_changed()
+                            MCDeck.deck.reset()
+                        return
 
         # For any other situation, handle through the paste method
         MCDeck.deck.paste(droppedMimeData=mime)
@@ -677,6 +741,179 @@ class MCDeck(QtWidgets.QMainWindow):
                 err('Operation error', f'Could not update images: {e}')
 
     @QtCore.Slot()
+    def menu_mcdb_import_card(self):
+        err = lambda s1, s2: ErrorDialog(self, s1, s2).exec()
+
+        # Get card ID(s) or URL(s)
+        dialog = MarvelCDBCardImportDialog(self)
+        if not dialog.exec():
+            return
+
+        # Load cards database (with progress bar) if not already loaded
+        try:
+            have_db = self._loadMarvelCDB()
+        except Exception as e:
+            err('MarvelCDB database load error',
+                f'Could not load database: {e}')
+            return
+        else:
+            if not have_db:
+                return
+
+        # Parse entered values, generating (hopefully valid) IDs.
+        s = dialog._le.text().strip()
+        if not s:
+            err('No input', 'No ID or URL was entered')
+            return
+        s = s.replace(',', ' ')
+        s_l = s.split(' ')
+        s_l = [s.strip() for s in s_l if s]
+        if not s_l:
+            err('Invalid input', 'Invalid format of input')
+            return
+        id_l = []
+        url_prefix = 'https://marvelcdb.com/card/'
+        for s in s_l:
+            if s.startswith(url_prefix):
+                s = s[len(url_prefix):]
+            s = s.lower()
+            if s.endswith('b'):
+                # If alter-ego card, replace with its opposite hero card
+                s = s[:-1] + 'a'
+            id_l.append(s)
+
+        # Load cards for the provided IDs
+        cards = []
+        placeholder = dialog._create_placeholders_chk.isChecked()
+        self.__operation_cancelled = False
+        _qpd = QtWidgets.QProgressDialog
+        dlg = _qpd('Importing card(s)', 'Cancel', 0, len(cards))
+        dlg.show()
+
+        for code in id_l:
+            try:
+                _card = MarvelCDB.card(code)
+                if _card is None:
+                    err('No such card',
+                        f'No card with code {code} in local MarvelCDB index')
+                    return
+                card = _card.to_mcdeck_card(placeholder=placeholder)
+                dlg.setValue(dlg.value() + 1)
+                QtCore.QCoreApplication.processEvents()  # Force Qt update
+                if self.__operation_cancelled:
+                    err('Operation cancelled', 'Operation cancelled by user.')
+                    return
+            except Exception as e:
+                dlg.hide()
+                err('Card import failed', 'Card import failed for card with '
+                    f'id {code}: {e}')
+                return
+            else:
+                cards.append(card)
+        dlg.hide()
+
+        # Add card(s) to the deck
+        if not MCDeck.deck._octgn:
+            self.menu_octgn_enable()
+        MCDeck.deck._undo.add_undo_level(hide=False)
+        for card in cards:
+            self.deck.addCardObject(card)
+        self.deck.reset()
+
+    @QtCore.Slot()
+    def menu_mcdb_import_deck(self):
+        err = lambda s1, s2: ErrorDialog(self, s1, s2).exec()
+
+        # Get deck ID or URL
+        dialog = MarvelCDBDeckImportDialog(self)
+        if not dialog.exec():
+            return
+
+        # Load cards database (with progress bar) if not already loaded
+        try:
+            have_db = self._loadMarvelCDB()
+        except Exception as e:
+            err('MarvelCDB database load error',
+                f'Could not load database: {e}')
+            return
+        else:
+            if not have_db:
+                return
+
+        # Parse entered value as a (hopefully) deck ID
+        s = dialog._le.text().strip()
+        if not s:
+            err('No input', 'No ID or URL was entered')
+            return
+        url_prefix = 'https://marvelcdb.com/decklist/view/'
+        if s.startswith(url_prefix):
+            s = s[len(url_prefix):]
+            s = s.split('/')[0]
+
+        # Load the deck
+        try:
+            deck = MarvelCDB.load_deck(s)
+        except Exception as e:
+            err('Deck import failed', 'Deck import failed for deck ID '
+                f'{s}: {e}')
+            return
+
+        # Filter cards depending on whether hero and/or non-hero cards
+        # should be imported
+        import_hero_cards = dialog._include_hero_cards_chk.isChecked()
+        import_other_cards = dialog._include_non_hero_cards_chk.isChecked()
+        deck_cards = []
+        for card, num in deck.cards:
+            if card.belongs_to_hero_set():
+                if import_hero_cards:
+                    deck_cards.append((card, num))
+            else:
+                if import_other_cards:
+                    deck_cards.append((card, num))
+        if not deck_cards:
+            err('Nothing to import', 'No cards to import (after applying '
+                'settings on whether to import hero/non-hero cards)')
+            return
+
+        # Load all cards from the deck
+        cards = []
+        placeholder = dialog._create_placeholders_chk.isChecked()
+        num_cards = sum(num for card, num in deck_cards)
+        self.__operation_cancelled = False
+        _qpd = QtWidgets.QProgressDialog
+        dlg = _qpd('Importing card(s)', 'Cancel', 0, num_cards)
+        dlg.show()
+        for card, num in deck_cards:
+            try:
+                result = card.to_mcdeck_card(copies=num,
+                                             placeholder=placeholder)
+                dlg.setValue(dlg.value() + num)
+                QtCore.QCoreApplication.processEvents()  # Force Qt update
+                if self.__operation_cancelled:
+                    err('Operation cancelled', 'Operation cancelled by user.')
+                    return
+            except Exception as e:
+                dlg.hide()
+                err('Card import failed', 'Card import failed for card with '
+                    f'id {card.code}: {e}')
+                return
+            else:
+                if num == 1:
+                    cards.append(result)
+                else:
+                    for c in result:
+                        cards.append(c)
+        dlg.hide()
+
+        # Add card(s) to the deck
+        if not MCDeck.deck._octgn:
+            self.menu_octgn_enable()
+        MCDeck.deck._undo.add_undo_level(hide=False)
+        for card in cards:
+            self.deck.addCardObject(card)
+        self.deck.reset()
+
+    @QtCore.Slot()
     def menu_octgn_enable(self):
         if not MCDeck.deck._octgn:
             MCDeck.deck._octgn = octgn.OctgnCardSetData(name='')
@@ -716,6 +953,65 @@ class MCDeck(QtWidgets.QMainWindow):
                     MCDeck.deck._octgn = None
                     MCDeck.deck._undo.clear()
                     self.enableOctgn(False)
+
+    @QtCore.Slot()
+    def menu_octgn_import(self):
+        MCDeck.deck._undo.add_undo_level(hide=False)
+        try:
+            dialog = octgn.OctgnCardImportDialog(self)
+        except Exception as e:
+            err = lambda s1, s2: ErrorDialog(self, s1, s2).exec()
+            err('Octgn import error', f'Could not initiate card import: {e}')
+        else:
+            dialog.addedCards.connect(self._octgn_import_added_cards)
+            dialog.exec()
+            if dialog._imported_cards:
+                MCDeck.deck._deck_changed()
+                MCDeck.deck.reset()
+            else:
+                MCDeck.deck._undo_action(deselect=False, purge=True)
+
+    @QtCore.Slot()
+    def menu_octgn_import_o8d(self):
+        err = lambda s1, s2: ErrorDialog(self, s1, s2).exec()
+
+        if self.deck._octgn is None:
+            _dfun = QtWidgets.QMessageBox.question
+            _keys = QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel
+            k = _dfun(self, 'Enable OCTGN metadata', 'Successful .o8d import '
+                      'requires enabling OCTGN metadata. Proceed?', _keys)
+            if k == QtWidgets.QMessageBox.Cancel:
+                return
+
+        _dlg = QtWidgets.QFileDialog.getOpenFileName
+        _flt = 'OCTGN deck (*.o8d)'
+        try:
+            data_path = octgn.OctgnCardSetData.get_octgn_data_path(val=True)
+        except Exception as e:
+            err('Invalid data path', f'No OCTGN data path: {e}')
+        _dir = os.path.join(data_path, 'GameDatabase', octgn.mc_game_id,
+                            'FanMade')
+        if not os.path.isdir(_dir):
+            _dir = data_path
+        path, cat = _dlg(self, 'Open MCD index or archive containing '
+                         'an MCD index', filter=_flt, dir=_dir)
+        if not path:
+            return
+
+        MCDeck.deck._undo.add_undo_level(hide=False)
+        try:
+            num = octgn.load_o8d_cards(path, data_path=data_path, parent=self)
+        except Exception as e:
+            err('.o8d import error', f'Could not import: {e}')
+            MCDeck.deck._undo_action(deselect=False, purge=True)
+            raise(e)
+        else:
+            MCDeck.deck._deck_changed()
+            MCDeck.deck.reset()
+
+    @QtCore.Slot()
+    def _octgn_import_added_cards(self):
+        MCDeck.deck.reset()
 
     @QtCore.Slot()
     def menu_octgn_install(self):
@@ -759,10 +1055,11 @@ class MCDeck(QtWidgets.QMainWindow):
         """Update to whether deck has a current selection of cards."""
         for w in (self.__cut_action, self.__copy_action, self.__set_player,
                   self.__set_encounter, self.__set_villain,
-                  self.__set_unspecified, self.__set_back_image,
-                  self.__use_front_as_back, self.__remove_back_image,
-                  self.__rotate_half_circle, self.__rotate_clockwise,
-                  self.__rotate_anti_clockwise, self.__delete_cards):
+                  self.__set_unspecified, self.__set_front_image,
+                  self.__set_back_image, self.__use_front_as_back,
+                  self.__remove_back_image, self.__rotate_half_circle,
+                  self.__rotate_clockwise, self.__rotate_anti_clockwise,
+                  self.__delete_cards):
             w.setEnabled(status)
         _enable_octgn_edit_sel = bool(MCDeck.deck._octgn and status)
         self._octgn_edit_selected.setEnabled(_enable_octgn_edit_sel)
@@ -932,11 +1229,36 @@ class MCDeck(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def enableOctgn(self, enable):
         for w in (self._octgn_edit, self._octgn_delete, self._octgn_install,
-                  self._octgn_uninstall, self.__export_octgn_action):
+                  self._octgn_uninstall, self.__export_octgn_card_set_action,
+                  self.__export_octgn_deck_action):
             w.setEnabled(enable)
         self._octgn_enable.setEnabled(not enable)
         _enable_octgn_edit_sel = bool(MCDeck.deck._octgn and enable)
         self._octgn_edit_selected.setEnabled(_enable_octgn_edit_sel)
+
+    @QtCore.Slot()
+    def cancelOperation(self):
+        self.__operation_cancelled = True
+
+    def _loadMarvelCDB(self):
+        """Loads MarvelCDB card database if not already loaded."""
+        if not MarvelCDB._cards:
+            choice_dlg = LoadMarvelCDBDialog(self)
+            if not choice_dlg.exec():
+                return False
+
+            _qpd = QtWidgets.QProgressDialog
+            dlg = _qpd('Loading MarvelCDB cards index ...', 'Cancel', 0, 20)
+            dlg.show()
+            try:
+                MarvelCDB.load_cards(all=choice_dlg._all, progress=dlg)
+            finally:
+                dlg.hide()
+            # Disable PDF generation after downloading cards index
+            self._export_pdf_action.setEnabled(False)
+            return True
+        else:
+            return True
 
 
 class Deck(QtWidgets.QScrollArea):
@@ -1001,6 +1323,27 @@ class Deck(QtWidgets.QScrollArea):
             card.show()
         self._deck_changed()
         return card
+
+    def addCardObject(self, card, pos=-1, show=True):
+        """Add a card object to the card list.
+
+        :param card: card object
+        :type  card: :class:`Card`
+        :param  pos: position to insert (end if -1)
+        :param show: if True call show() on widget before returning
+
+        """
+        card.setParent(self.__view)
+        card.setCardWidth(self.__card_scaled_width)
+        if pos < 0:
+            self.__cards.append(card)
+        else:
+            self.__cards.insert(pos, card)
+        card.cardSelected.connect(self.cardSingleSelected)
+        card.cardCtrlSelected.connect(self.cardCtrlSelected)
+        card.cardShiftSelected.connect(self.cardShiftSelected)
+        card.setVisible(show)
+        self._deck_changed()
 
     def reset(self):
         """Resets deck view."""
@@ -1204,7 +1547,7 @@ class Deck(QtWidgets.QScrollArea):
         TTSExportDialog(self, MCDeck.settings, self.__cards).exec()
 
     @QtCore.Slot()
-    def exportOctgn(self):
+    def exportOctgnCardSet(self):
         """Export deck as Octgn card set"""
         err = lambda s1, s2: ErrorDialog(self, s1, s2).exec()
         if not self._octgn:
@@ -1212,12 +1555,12 @@ class Deck(QtWidgets.QScrollArea):
 
         if not self.__cards:
             _msg = 'The deck has no cards to export'
-            err(self, 'Nothing to export', _msg)
+            err('Nothing to export', _msg)
             return
 
         if not octgn.OctgnCardSetData.validate_legal_deck(self):
-            _msg = 'The deck has no cards to export'
-            err(self, 'Cannot export Octgn data', _msg)
+            _msg = 'The deck does not have a validate set of OCTGN data'
+            err('Cannot export Octgn data', _msg)
             return
 
         # Get a .zip filename for saving
@@ -1233,7 +1576,7 @@ class Deck(QtWidgets.QScrollArea):
             with zipfile.ZipFile(path, 'w') as zf:
                 _exp(self, zf, MCDeck.settings)
         except Exception as e:
-            err(self, 'Octgn export error', f'Unable to export: {e}')
+            err('Octgn export error', f'Unable to export: {e}')
         else:
             info = QtWidgets.QMessageBox(self, 'Successful export', '')
             text = f'''<p>An OCTGN card set with GUID
@@ -1271,6 +1614,11 @@ class Deck(QtWidgets.QScrollArea):
             info.setStandardButtons(QtWidgets.QMessageBox.Ok)
             info.setDefaultButton(QtWidgets.QMessageBox.Ok)
             info.exec()
+
+    @QtCore.Slot()
+    def exportOctgnDeck(self):
+        """Export deck as an Octgn .o8d deck"""
+        octgn.OctgnCardSetData.export_o8d_deck(self, self)
 
     @QtCore.Slot()
     def cardSingleSelected(self, widget):
@@ -1372,9 +1720,7 @@ class Deck(QtWidgets.QScrollArea):
             # Pasting from local application copied/cut card list buffer
             for i, card in enumerate(self.__clipboard):
                 self._undo.add_undo_level()
-                self.addCard(card.front_img, card.specified_back_img,
-                             card.specified_back_bleed, card.ctype,
-                             pos + i)
+                self.addCardObject(card.copy(), pos=(pos + i))
                 self.show_cards()
         else:
             # Pasting from MIME data
@@ -1685,12 +2031,68 @@ class Deck(QtWidgets.QScrollArea):
             self.show_cards()
 
     @QtCore.Slot()
-    def setBackImage(self):
-        """Open an image file as the card back for the card."""
+    def setFrontImage(self):
+        """Open an image file as the card front for the card(s)."""
         if self.has_selected():
             _fun = loadImageFromFileDialog
             img = _fun(self, 'Open card back image file')
             if img:
+                # Handle aspect transformation
+                img = LcgImage(img)
+                _s = MCDeck.settings
+                aspect_rotation = _s.aspect_rotation
+                if aspect_rotation != 'none':
+                    if aspect_rotation == 'clockwise':
+                        clockwise = True
+                    if aspect_rotation == 'anticlockwise':
+                        clockwise = False
+                    else:
+                        raise RuntimeError('Should never happen')
+                    portrait = (_s.card_height_mm >= _s.card_width_mm)
+                    c_portrait = (img.heightMm() >= img.widthMM())
+                    if portrait ^ c_portrait:
+                        # Wrong aspect, rotate
+                        if clockwise:
+                            img = img.rotateClockwise()
+                        else:
+                            img = img.rotateAntiClockwise()
+
+                self._undo.add_undo_level()
+                for i, card in enumerate(self.__cards):
+                    if card.selected:
+                        card = self._copy_card(card)
+                        card.set_front_image(img)
+                        card.select(True)
+                        self.__cards[i] = card
+                self._deck_changed()
+                self.show_cards()
+
+    @QtCore.Slot()
+    def setBackImage(self):
+        """Open an image file as the card back for the card(s)."""
+        if self.has_selected():
+            _fun = loadImageFromFileDialog
+            img = _fun(self, 'Open card back image file')
+            if img:
+                # Handle aspect transformation
+                img = LcgImage(img)
+                _s = MCDeck.settings
+                aspect_rotation = _s.aspect_rotation
+                if aspect_rotation != 'none':
+                    if aspect_rotation == 'clockwise':
+                        clockwise = True
+                    if aspect_rotation == 'anticlockwise':
+                        clockwise = False
+                    else:
+                        raise RuntimeError('Should never happen')
+                    portrait = (_s.card_height_mm >= _s.card_width_mm)
+                    c_portrait = (img.heightMm() >= img.widthMM())
+                    if portrait ^ c_portrait:
+                        # Wrong aspect, rotate
+                        if clockwise:
+                            img = img.rotateClockwise()
+                        else:
+                            img = img.rotateAntiClockwise()
                 self._undo.add_undo_level()
                 for i, card in enumerate(self.__cards):
                     if card.selected:
@@ -2477,6 +2879,7 @@ class Card(QtWidgets.QWidget):
 
         self._octgn = None         # OCTGN card data for the card (if set)
         self._octgn_back = None    # OCTGN card data for the card back (if set)
+        self._imported = False     # If True the card was originally imported
 
         self._selected = False
 
@@ -2867,6 +3270,173 @@ class CardTypeDialog(QtWidgets.QDialog):
     @QtCore.Slot()
     def clickedNoBack(self):
         self.__result = (4, None)
+        self.accept()
+
+
+class MarvelCDBCardImportDialog(QtWidgets.QDialog):
+    """Dialog for Tools -> MarvelCDB -> Import Card ..."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._ids = []
+
+        self.setWindowTitle('Import card(s) from MarvelCDB')
+        l = QtWidgets.QVBoxLayout()
+        _lbl = QtWidgets.QLabel
+        _tl = _lbl('Enter <a href="https://marvelcdb.com/">MarvelCDB</a> card '
+                   'ID(s) or URL(s) separated by spaces or commas.')
+        _tl.setTextFormat(QtCore.Qt.RichText)
+        _tl.setOpenExternalLinks(True)
+        l.addWidget(_tl)
+        box = QtWidgets.QGroupBox()
+        box_l = QtWidgets.QHBoxLayout()
+        box_l.addWidget(QtWidgets.QLabel('ID(s) or URL(s):'))
+        self._le = QtWidgets.QLineEdit()
+        box_l.addWidget(self._le)
+        box.setLayout(box_l)
+        l.addWidget(box)
+        _l = QtWidgets.QHBoxLayout()
+        self._create_placeholders_chk = QtWidgets.QCheckBox()
+        self._create_placeholders_chk.setChecked(True)
+        _tip = ('If checked, then a placeholder image is generated if the '
+                'card has no image in MarvelCDB.')
+        self._create_placeholders_chk.setToolTip(_tip)
+        _l.addWidget(self._create_placeholders_chk)
+        _l.addWidget(_lbl('Create placeholder if no image in MarvelCDB'))
+        _l.addStretch(1)
+        l.addLayout(_l)
+        if not MCDeck.deck._octgn:
+            l.addWidget(_lbl('Note: importing MarvelCDB card(s) '
+                             'automatically enables OCTGN metadata'))
+        l2 = QtWidgets.QHBoxLayout()
+        l2.addStretch(1)
+        btn_import = QtWidgets.QPushButton('Import')
+        btn_import.clicked.connect(self.accept)
+        btn_cancel = QtWidgets.QPushButton('Cancel')
+        btn_cancel.clicked.connect(self.reject)
+        l2.addWidget(btn_import)
+        l2.addWidget(btn_cancel)
+        l.addLayout(l2)
+        self.setLayout(l)
+
+
+class MarvelCDBDeckImportDialog(QtWidgets.QDialog):
+    """Dialog for Tools -> MarvelCDB -> Import Deck ..."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._ids = []
+
+        self.setWindowTitle('Import deck from MarvelCDB')
+        l = QtWidgets.QVBoxLayout()
+        _lbl = QtWidgets.QLabel
+        _tl = _lbl('Enter <a href="https://marvelcdb.com/">MarvelCDB</a> deck '
+                   'ID or URL.')
+        _tl.setTextFormat(QtCore.Qt.RichText)
+        _tl.setOpenExternalLinks(True)
+        l.addWidget(_tl)
+        box = QtWidgets.QGroupBox()
+        box_l = QtWidgets.QHBoxLayout()
+        box_l.addWidget(QtWidgets.QLabel('Deck ID or URL:'))
+        self._le = QtWidgets.QLineEdit()
+        box_l.addWidget(self._le)
+        box.setLayout(box_l)
+        l.addWidget(box)
+        _l = QtWidgets.QHBoxLayout()
+        self._include_hero_cards_chk = QtWidgets.QCheckBox()
+        self._include_hero_cards_chk.setChecked(True)
+        _tip = ('If unchecked, hero cards are excluded from the import. This '
+                'is useful for combining non-hero cards from MarvelCDB with '
+                'a custom hero set.')
+        self._include_hero_cards_chk.setToolTip(_tip)
+        _l.addWidget(self._include_hero_cards_chk)
+        _l.addWidget(_lbl('Include hero cards when importing'))
+        _l.addStretch(1)
+        l.addLayout(_l)
+        _l = QtWidgets.QHBoxLayout()
+        self._include_non_hero_cards_chk = QtWidgets.QCheckBox()
+        self._include_non_hero_cards_chk.setChecked(True)
+        _tip = ('If unchecked, non-hero cards are excluded from the import. '
+                'This is useful for getting only a set of hero cards to '
+                'combine with custom aspect cards.')
+        self._include_non_hero_cards_chk.setToolTip(_tip)
+        _l.addWidget(self._include_non_hero_cards_chk)
+        _l.addWidget(_lbl('Include non-hero cards when importing'))
+        _l.addStretch(1)
+        l.addLayout(_l)
+        _l = QtWidgets.QHBoxLayout()
+        self._create_placeholders_chk = QtWidgets.QCheckBox()
+        self._create_placeholders_chk.setChecked(True)
+        _tip = ('If checked, then a placeholder image is generated if the '
+                'card has no image in MarvelCDB.')
+        self._create_placeholders_chk.setToolTip(_tip)
+        _l.addWidget(self._create_placeholders_chk)
+        _l.addWidget(_lbl('Create placeholder if no image in MarvelCDB'))
+        _l.addStretch(1)
+        l.addLayout(_l)
+        if not MCDeck.deck._octgn:
+            l.addWidget(_lbl('Note: importing a MarvelCDB deck '
+                             'automatically enables OCTGN metadata'))
+        l2 = QtWidgets.QHBoxLayout()
+        l2.addStretch(1)
+        btn_import = QtWidgets.QPushButton('Import')
+        btn_import.clicked.connect(self.accept)
+        btn_cancel = QtWidgets.QPushButton('Cancel')
+        btn_cancel.clicked.connect(self.reject)
+        l2.addWidget(btn_import)
+        l2.addWidget(btn_cancel)
+        l.addLayout(l2)
+        self.setLayout(l)
+
+
+class LoadMarvelCDBDialog(QtWidgets.QDialog):
+    """Dialog for first time initialization of MarvelCDB cards index."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setWindowTitle('Download MarvelCDB cards index')
+        self.setMaximumWidth(600)
+        _l = QtWidgets.QVBoxLayout()
+        _txt = '''<p>Accessing <a href="https://marvelcdb.com/">MarvelCDB</a>
+        cards requires downloading a card index. Setting up access to all cards
+        is slower and more taxing on the MarvelCDB server, so <b>consider
+        downloading player cards</b> unless you also need encounters and
+        villains.</p>
+
+        <p>After constructing the card index, <b>PDF generation will be
+        disabled</b>until the app is closed (a gentle reminder that official
+        game cards should not be printed).</p>
+
+        <p>Choose which card set to download:</p>
+        '''
+        _lbl = QtWidgets.QLabel(_txt)
+        _lbl.setTextFormat(QtCore.Qt.RichText)
+        _lbl.setOpenExternalLinks(True)
+        _lbl.setWordWrap(True)
+        _l.addWidget(_lbl)
+        _l2 = QtWidgets.QHBoxLayout()
+        _l2.addStretch()
+        self._fast_btn = QtWidgets.QPushButton('Player cards')
+        self._fast_btn.clicked.connect(self.fast_btn)
+        _l2.addWidget(self._fast_btn)
+        self._slow_btn = QtWidgets.QPushButton('All cards')
+        self._slow_btn.clicked.connect(self.slow_btn)
+        _l2.addWidget(self._slow_btn)
+        self._cancel_btn = QtWidgets.QPushButton('Cancel')
+        self._cancel_btn.clicked.connect(self.reject)
+        _l2.addWidget(self._cancel_btn)
+        self._fast_btn.setDefault(True)
+        _l.addLayout(_l2)
+        self.setLayout(_l)
+
+    @QtCore.Slot()
+    def slow_btn(self):
+        self._all = True
+        self.accept()
+
+    @QtCore.Slot()
+    def fast_btn(self):
+        self._all = False
         self.accept()
 
 

@@ -26,6 +26,7 @@ import math
 from lcgtools import LcgException
 from PySide6 import QtWidgets, QtCore, QtGui
 
+import mcdeck.octgn
 import mcdeck.util
 
 
@@ -319,6 +320,15 @@ class Settings(QtCore.QSettings):
         self.setValue('villain_bleed_mm', str(value))
 
     @property
+    def octgn_path(self):
+        """Path to OCTGN Data/ directory."""
+        return self.value('octgn_path', None)
+
+    @octgn_path.setter
+    def octgn_path(self, value):
+        self.setValue('octgn_path', value)
+
+    @property
     def card_view_width_px(self):
         """Relative offset between cards (front+back) in view."""
         return int(self.value('card_view_width_px', 200))
@@ -399,6 +409,9 @@ class SettingsDialog(QtWidgets.QDialog):
         tab = SettingsPdfTab(settings)
         tab_widget.addTab(tab, 'PDF export')
         self.__tabs.append(tab)
+        tab = SettingsOctgnTab(settings)
+        tab_widget.addTab(tab, 'OCTGN')
+        self.__tabs.append(tab)
         tab = SettingsViewTab(settings)
         tab_widget.addTab(tab, 'View')
         self.__tabs.append(tab)
@@ -416,6 +429,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.setLayout(layout)
 
         self.setWindowTitle('Settings')
+        self.setMinimumWidth(500)
 
     def accept(self):
         # Validate data on tabs before committing
@@ -801,6 +815,65 @@ class SettingsPdfTab(QtWidgets.QDialog):
         self.__settings.card_fold_distance_mm = _w_fl_val(_val)
         self.__settings.twosided = self.__twosided_chk.isChecked()
         self.accept()
+
+
+class SettingsOctgnTab(QtWidgets.QDialog):
+    """Settings dialog tab for OCTGN."""
+
+    def __init__(self, settings):
+        super().__init__()
+        self.__settings = settings
+        _s = self.__settings
+
+        main_layout = QtWidgets.QVBoxLayout()
+
+        _box = QtWidgets.QGroupBox(self)
+        _box.setTitle('OCTGN data directory')
+        _layout = QtWidgets.QHBoxLayout(self)
+        # Line edits
+        lbl = QtWidgets.QLabel
+        row = 0
+        _layout.addWidget(lbl('Path:'))
+        _fname = _s.octgn_path
+        _fname = '' if not _fname else _fname
+        self.__octgn_path_le = QtWidgets.QLineEdit()
+        self.__octgn_path_le.setText(_fname)
+        _tip = ('Path to OCTGN data directory, typically '
+                '~\\AppData\\Local\\Programs\\OCTGN\\Data\\')
+        self.__octgn_path_le.setToolTip(_tip)
+        _layout.addWidget(self.__octgn_path_le)
+        self.__octgn_path_btn = QtWidgets.QPushButton('Directory...')
+        self.__octgn_path_btn.clicked.connect(self.octgn_path_clicked)
+        _layout.addWidget(self.__octgn_path_btn)
+        _box.setLayout(_layout)
+        main_layout.addWidget(_box)
+        main_layout.addStretch(1)
+
+        self.setLayout(main_layout)
+
+    def validate(self):
+        """Checks if data is (probably) valid, raises exception otherwise."""
+        path = self.__octgn_path_le.text()
+        if path:
+            try:
+                mcdeck.octgn.OctgnCardSetData.validate_octgn_data_path(path)
+            except Exception as e:
+                raise LcgException(f'Path {path} appears not to be a valid '
+                                   f'OCTGN Data/ directory: {e}')
+
+    def commit(self):
+        """Commit registered values to config object."""
+        _name = self.__octgn_path_le.text().strip()
+        _name = None if not _name else _name
+        self.__settings.octgn_path = _name
+        self.accept()
+
+    @QtCore.Slot()
+    def octgn_path_clicked(self, checked):
+        _fun = QtWidgets.QFileDialog.getExistingDirectory
+        path = _fun(self, 'Select OCTGN user Data/ directory')
+        if path:
+            self.__octgn_path_le.setText(path)
 
 
 class SettingsViewTab(QtWidgets.QDialog):

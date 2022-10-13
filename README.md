@@ -10,8 +10,12 @@ be exported to the supported export formats:
 * Deck front&back image for importing into
   [Tabletop Simulator](https://store.steampowered.com/app/286160/Tabletop_Simulator/)
 
-* Card sets for [OCTGN](https://www.octgn.net/) and its
+* Card sets and .o8d decks for [OCTGN](https://www.octgn.net/) and its
   [Marvel Champions module](https://twistedsistem.wixsite.com/octgnmarvelchampions/)
+
+MCdeck can import cards and decks from [MarvelCDB](https://marvelcdb.com/), and
+it can import cards directly from a local OCTGN database as well as loading
+OCTGN .o8d deck files when referenced cards are present in the local database. 
 
 The tool is fan made and is in no way associated with or endorsed by owners of
 MC intellectual property. It is intended entirely for using with custom user
@@ -66,11 +70,10 @@ mcdeck
 ```
 
 See `mcdeck --help` for command line options (which is currently
-limited to specifying a deck .zip or .mcd file to open).
-
-If for some reason the software is installed on a system which does not
-properly add the program's executable to its PATH, then it should still be
-possible to execute the program with
+limited to specifying a deck .zip or .mcd file to open). If for some reason the
+software is installed on a system which does not properly add the program's
+executable to its PATH, then it should still be possible to execute the program
+with
 
 ```
 python -m mcdeck.script

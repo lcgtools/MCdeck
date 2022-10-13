@@ -1,3 +1,11 @@
+v0.5.6:
+- New: drag & drop of .o8d files
+- New: import OCTGN .o8d files
+- New: import/browse cards from a local OCTGN installation
+- New: use local OCTGN images (if available) if MarvelCDB has no image
+- New: import cards/decks from MarvelCDB (placeholder if no image available)
+- New: replace front image on selected card(s)
+
 v0.5.5.2
 - Fix: launch with 'python -m mcdeck.script' instead due to setuptools/pip
        not playing nice with installing a __main__.py file
