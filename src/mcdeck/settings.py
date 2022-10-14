@@ -329,6 +329,15 @@ class Settings(QtCore.QSettings):
         self.setValue('octgn_path', value)
 
     @property
+    def octgn_card_sets_path(self):
+        """Default path for OCTGN .zip card sets."""
+        return self.value('octgn_card_sets_path', None)
+
+    @octgn_card_sets_path.setter
+    def octgn_card_sets_path(self, value):
+        self.setValue('octgn_card_sets_path', value)
+
+    @property
     def card_view_width_px(self):
         """Relative offset between cards (front+back) in view."""
         return int(self.value('card_view_width_px', 200))
@@ -829,11 +838,11 @@ class SettingsOctgnTab(QtWidgets.QDialog):
 
         _box = QtWidgets.QGroupBox(self)
         _box.setTitle('OCTGN data directory')
-        _layout = QtWidgets.QHBoxLayout(self)
+        _layout = QtWidgets.QGridLayout(self)
         # Line edits
         lbl = QtWidgets.QLabel
         row = 0
-        _layout.addWidget(lbl('Path:'))
+        _layout.addWidget(lbl('Data Path:'), row, 0)
         _fname = _s.octgn_path
         _fname = '' if not _fname else _fname
         self.__octgn_path_le = QtWidgets.QLineEdit()
@@ -841,10 +850,24 @@ class SettingsOctgnTab(QtWidgets.QDialog):
         _tip = ('Path to OCTGN data directory, typically '
                 '~\\AppData\\Local\\Programs\\OCTGN\\Data\\')
         self.__octgn_path_le.setToolTip(_tip)
-        _layout.addWidget(self.__octgn_path_le)
+        _layout.addWidget(self.__octgn_path_le, row, 1)
         self.__octgn_path_btn = QtWidgets.QPushButton('Directory...')
         self.__octgn_path_btn.clicked.connect(self.octgn_path_clicked)
-        _layout.addWidget(self.__octgn_path_btn)
+        _layout.addWidget(self.__octgn_path_btn, row, 2)
+        row += 1
+        _layout.addWidget(lbl('Card Set Path:'), row, 0)
+        _fname = _s.octgn_card_sets_path
+        _fname = '' if not _fname else _fname
+        self.__octgn_card_sets_path_le = QtWidgets.QLineEdit()
+        self.__octgn_card_sets_path_le.setText(_fname)
+        _tip = ('Default path for card sets packaged as .zip files, for '
+                'conveniently (un)installing card sets (see the Tools menu).')
+        self.__octgn_card_sets_path_le.setToolTip(_tip)
+        _layout.addWidget(self.__octgn_card_sets_path_le, row, 1)
+        self.__octgn_card_sets_path_btn = QtWidgets.QPushButton('Directory...')
+        _w = self.__octgn_card_sets_path_btn
+        _w.clicked.connect(self.octgn_card_sets_path_clicked)
+        _layout.addWidget(self.__octgn_card_sets_path_btn, row, 2)
         _box.setLayout(_layout)
         main_layout.addWidget(_box)
         main_layout.addStretch(1)
@@ -866,6 +889,9 @@ class SettingsOctgnTab(QtWidgets.QDialog):
         _name = self.__octgn_path_le.text().strip()
         _name = None if not _name else _name
         self.__settings.octgn_path = _name
+        _name = self.__octgn_card_sets_path_le.text().strip()
+        _name = None if not _name else _name
+        self.__settings.octgn_card_sets_path = _name
         self.accept()
 
     @QtCore.Slot()
@@ -874,6 +900,13 @@ class SettingsOctgnTab(QtWidgets.QDialog):
         path = _fun(self, 'Select OCTGN user Data/ directory')
         if path:
             self.__octgn_path_le.setText(path)
+
+    @QtCore.Slot()
+    def octgn_card_sets_path_clicked(self, checked):
+        _fun = QtWidgets.QFileDialog.getExistingDirectory
+        path = _fun(self, 'Select default directory for .zip card sets')
+        if path:
+            self.__octgn_card_sets_path_le.setText(path)
 
 
 class SettingsViewTab(QtWidgets.QDialog):

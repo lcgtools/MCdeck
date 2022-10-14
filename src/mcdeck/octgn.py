@@ -26,6 +26,7 @@ import os
 import pathlib
 import shutil
 import uuid
+import zipfile
 from xml.etree import ElementTree
 
 from PySide6 import QtWidgets, QtCore, QtGui
@@ -244,9 +245,16 @@ class OctgnCardSetData(object):
             return True
 
     @classmethod
-    def load_all_octgn_sets(cls, data_path=None):
-        """Parse the OCTGN card database (if not already parsed)."""
-        if cls._octgn_sets:
+    def load_all_octgn_sets(cls, data_path=None, force=False):
+        """Parse the OCTGN card database (if not already parsed).
+
+        :param data_path: path to the OCTGN Data/ directory
+        :param     force: if True, reload the OCTGN database
+
+        """
+        if force:
+            cls._octgn_sets = None
+        elif cls._octgn_sets:
             return
 
         data_path = OctgnCardSetData.get_octgn_data_path(data_path, val=True)
@@ -4039,3 +4047,214 @@ def load_o8d_cards(o8d_file, data_path=None, parent=None):
         for card in cards:
             MCDeck.deck.addCardObject(card)
     return len(cards)
+
+
+def install_card_sets(data_path, paths):
+    """Install a set of .zip format card sets into Data/.
+
+    :param data_path: path to OCTGN Data/ directory
+    :param     paths: list of paths to .zip files to install
+
+    """
+    OctgnCardSetData.validate_octgn_data_path(data_path)
+
+    pending, skipped = [], []
+
+    for path in paths:
+        status, data = _validate_card_set_file(data_path, path)
+        if not status:
+            skipped.append((path, data))
+            continue
+        else:
+            pending.append((path, data))
+
+    installed = []
+    for path, data in pending:
+        # Uninstall card set if already installed
+        _uninst_l, _skip_l = uninstall_card_sets(data_path, [path])
+        if not _uninst_l:
+            _msg = 'Could not uninstall card set'
+            skipped.append((path, _msg))
+            continue
+
+        # Install card set .zip file
+        zf = zipfile.ZipFile(path)
+        dest_dir = data_path
+        zf.extractall(path=dest_dir)
+        installed.append(path)
+
+    return (installed, skipped)
+
+
+def uninstall_card_sets(data_path, paths):
+    """Uninstall a set of .zip format card sets into Data/.
+
+    :param data_path: path to OCTGN Data/ directory
+    :param     paths: list of paths to .zip files to install
+
+    """
+    OctgnCardSetData.validate_octgn_data_path(data_path)
+
+    pending, skipped = [], []
+
+    for path in paths:
+        status, data = _validate_card_set_file(data_path, path)
+        if not status:
+            _msg = data
+            skipped.append((path, _msg))
+            continue
+        else:
+            pending.append((path, data))
+
+    uninstalled = []
+    for path, data in pending:
+        set_id, fanmade_l = data
+        game_set_path = os.path.join(data_path, 'GameDatabase', mc_game_id,
+                                     'Sets', set_id)
+        image_set_path = os.path.join(data_path, 'ImageDatabase', mc_game_id,
+                                      'Sets', set_id)
+        fanmade_paths = []
+        for _p, _f in fanmade_l:
+            fanmade_paths.append(os.path.join(data_path, 'GameDatabase',
+                                              mc_game_id, 'FanMade', _p, _f))
+
+        for _dir in game_set_path, image_set_path:
+            if os.path.isdir(_dir):
+                shutil.rmtree(_dir)
+
+        for _f in fanmade_paths:
+            if os.path.isfile(_f):
+                os.remove(_f)
+
+        uninstalled.append(path)
+
+    return (uninstalled, skipped)
+
+def _validate_card_set_file(data_path, path):
+    installed, skipped = [], []
+
+    if not os.path.isfile(path):
+        _msg = f'Not a file: {path}'
+        return (False, _msg)
+    try:
+        zf = zipfile.ZipFile(path)
+
+        p_tree = (dict(), [])
+        for info in zf.infolist():
+            _p = info.filename.split('/')
+            if not _p[-1]:
+                _p = _p[:-1]
+            _tree = p_tree
+            for _sub in _p[:-1]:
+                if _sub not in _tree[0]:
+                    _tree[0][_sub] = (dict(), [])
+                _tree = _tree[0][_sub]
+            _sub = _p[-1]
+            if info.is_dir():
+                _tree[0][_sub] = (dict(), [])
+            else:
+                _tree[1].append(info)
+
+        if (len(p_tree[0]) != 2 or 'GameDatabase' not in p_tree[0] or
+            'ImageDatabase' not in p_tree[0] or p_tree[1]):
+            _msg = 'Invalid top directory structure'
+            return (False, _msg)
+
+        game_db = p_tree[0]['GameDatabase']
+        image_db = p_tree[0]['ImageDatabase']
+        for _db in game_db, image_db:
+            if len(_db[0]) != 1 or mc_game_id not in _db[0] or _db[1]:
+                _msg = 'Databases must contain a single MC game directory'
+                return (False, _msg)
+        game_db = game_db[0][mc_game_id]
+        image_db = image_db[0][mc_game_id]
+
+        if not (1 <= len(game_db[0]) <= 2 or game_db[1]):
+            _msg = 'Invalid structure of GameDatabase dir for game'
+            return (False, _msg)
+        if ('Sets' not in game_db[0] or
+            (len(game_db[0]) == 2 and 'FanMade' not in game_db[0]) or
+            game_db[1]):
+                _msg = 'Invalid structure of GameDatabase dir for game'
+                return (False, _msg)
+        if (len(image_db[0]) != 1 or 'Sets' not in image_db[0] or
+            image_db[1]):
+            _msg = 'Invalid structure of ImageDatabase game directory'
+            return (False, _msg)
+
+        game_set_db = game_db[0]['Sets']
+        image_set_db = image_db[0]['Sets']
+        _set_ids = set()
+        for _db in game_set_db, image_set_db:
+            if len(_db[0]) != 1:
+                _msg = 'Database set dir(s) must contain single directory'
+                return (False, _msg)
+            _name, = _db[0].keys()
+            _name = _name.lower()
+            try:
+                uuid.UUID('{' + _name + '}')
+            except ValueError:
+                _msg = 'set ID directory name is not correct GUID format'
+                return (False, _msg)
+            _set_ids.add(_name)
+        if len(_set_ids) != 1:
+            _msg = 'Set ID mismatch for GameDatabase and ImageDatabase'
+            return (False, _msg)
+        set_id, = _set_ids
+
+        game_set_sub_db, = game_set_db[0].values()
+        if game_set_sub_db[0] or len(game_set_sub_db[1]) != 1:
+            _msg = 'GameDatabase Sets must contain a single file'
+            return (False, _msg)
+        _info = game_set_sub_db[1][0]
+        if _info.filename.split('/')[-1].lower() != 'set.xml':
+            _msg = 'GameDatabase Sets must contain set.xml'
+            return (False, _msg)
+        set_xml_info = _info
+
+        image_set_sub_db, = image_set_db[0].values()
+        if (len(image_set_sub_db[0]) != 1 or
+            'Cards' not in image_set_sub_db[0] or image_set_sub_db[1]):
+            _msg = 'Image database set must include a single dir Cards'
+            return (False, _msg)
+
+        image_cards_db, = image_set_sub_db[0].values()
+        if image_cards_db[0]:
+            _msg = 'ImageDatabase Sets cannot have subfolders'
+            return (False, _msg)
+        for _f_info in image_cards_db[1]:
+            ext = _f_info.filename[-4:]
+            if ext.lower() not in ('.jpg', '.png'):
+                _msg = 'All ImageDatabase Sets files must be .png or .jpg'
+                return (False, _msg)
+
+        fanmade_l = []
+        if 'FanMade' in game_db[0]:
+            _fan_db = game_db[0]['FanMade'][0]
+            for _sub in ('Heroes', 'Modulars', 'Villains'):
+                if _sub not in _fan_db:
+                    continue
+                for _f_info in _fan_db[_sub][1]:
+                    _ext = _f_info.filename[-4:]
+                    if _ext.lower() == '.o8d':
+                        _filename = _f_info.filename
+                        _filename = _filename.split('/')[-1]
+                        fanmade_l.append((_sub, _filename))
+                    else:
+                        _msg = 'FanMade folder includes non-.o8d files'
+                        return (False, _msg)
+
+        # Do a rough check of set.xml
+        with zf.open(set_xml_info.filename) as _set_xml_f:
+            _set = ElementTree.parse(_set_xml_f).getroot()
+            if _set.tag != 'set' or set_id != _set.attrib['id']:
+                _msg = 'Invalid set.xml structure or mismatching set ID'
+                return (False, _msg)
+
+    except Exception as e:
+        return (False, str(e))
+    else:
+        if not set_id:
+            return (False, 'Invalid set ID')  # Should never happen ...
+        else:
+            return (True, (set_id, fanmade_l))
