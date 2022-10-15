@@ -1,3 +1,6 @@
+v0.6.1.1:
+- New: add a setting to allow card sets with non-o8d files in FanMade folder
+
 v0.6.1:
 - New: added a tool for installing/uninstalling .zip file card sets
 - New: added a default path setting for .zip card sets in settings dialog

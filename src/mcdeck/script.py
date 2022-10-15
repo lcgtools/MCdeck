@@ -1119,7 +1119,7 @@ class MCDeck(QtWidgets.QMainWindow):
         if skipped:
             _msg += 'The following card sets could not be installed:\n'
             for _f, _m in skipped:
-                _msg += f'* {_f} (_m)\n'
+                _msg += f'* {_f} ({_m})\n'
             _msg += '\n'
         if installed:
             _msg += 'The OCTGN card database has been reloaded.'
@@ -1173,7 +1173,7 @@ class MCDeck(QtWidgets.QMainWindow):
         if skipped:
             _msg += 'The following card sets could not be removed:\n'
             for _f, _m in skipped:
-                _msg += f'* {_f} (_m)\n'
+                _msg += f'* {_f} ({_m})\n'
             _msg += '\n'
         if uninstalled:
             _msg += 'The OCTGN card database has been reloaded.'

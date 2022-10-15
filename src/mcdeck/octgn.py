@@ -4229,7 +4229,9 @@ def _validate_card_set_file(data_path, path):
                 return (False, _msg)
 
         fanmade_l = []
-        if 'FanMade' in game_db[0]:
+        _mod = importlib.import_module('mcdeck.script')
+        allow_non_o8d = _mod.MCDeck.settings.octgn_allow_fanmade_non_o8d
+        if 'FanMade' in game_db[0] and not allow_non_o8d:
             _fan_db = game_db[0]['FanMade'][0]
             for _sub in ('Heroes', 'Modulars', 'Villains'):
                 if _sub not in _fan_db:

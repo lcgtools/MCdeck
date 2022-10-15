@@ -338,6 +338,15 @@ class Settings(QtCore.QSettings):
         self.setValue('octgn_card_sets_path', value)
 
     @property
+    def octgn_allow_fanmade_non_o8d(self):
+        """If False card set FanMade folderes may only include .o8d files."""
+        return self.value('octgn_allow_fanmade_non_o8d', False)
+
+    @octgn_allow_fanmade_non_o8d.setter
+    def octgn_allow_fanmade_non_o8d(self, value):
+        self.setValue('octgn_allow_fanmade_non_o8d', bool(value))
+
+    @property
     def card_view_width_px(self):
         """Relative offset between cards (front+back) in view."""
         return int(self.value('card_view_width_px', 200))
@@ -870,6 +879,17 @@ class SettingsOctgnTab(QtWidgets.QDialog):
         _layout.addWidget(self.__octgn_card_sets_path_btn, row, 2)
         _box.setLayout(_layout)
         main_layout.addWidget(_box)
+        _l = QtWidgets.QHBoxLayout()
+        self.__octgn_allow_non_o8d_chk = QtWidgets.QCheckBox()
+        _checked = _s.octgn_allow_fanmade_non_o8d
+        self.__octgn_allow_non_o8d_chk.setChecked(_checked)
+        _tip = ('If unchecked, card set install/uninstall fails if the '
+                'FanMade folder includes other content than .o8d files')
+        self.__octgn_allow_non_o8d_chk.setToolTip(_tip)
+        _l.addWidget(self.__octgn_allow_non_o8d_chk)
+        _l.addWidget(lbl('Allow FanMade folder content other than .o8d'))
+        _l.addStretch(1)
+        main_layout.addLayout(_l)
         main_layout.addStretch(1)
 
         self.setLayout(main_layout)
@@ -892,6 +912,8 @@ class SettingsOctgnTab(QtWidgets.QDialog):
         _name = self.__octgn_card_sets_path_le.text().strip()
         _name = None if not _name else _name
         self.__settings.octgn_card_sets_path = _name
+        _chk = self.__octgn_allow_non_o8d_chk.isChecked()
+        self.__settings.octgn_allow_fanmade_non_o8d = _chk
         self.accept()
 
     @QtCore.Slot()
