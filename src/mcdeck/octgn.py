@@ -25,6 +25,8 @@ import importlib
 import os
 import pathlib
 import shutil
+import subprocess
+import tempfile
 import uuid
 import zipfile
 from xml.etree import ElementTree
@@ -835,10 +837,12 @@ class OctgnCardData(object):
         is also copied (with a reference to the new parent card data).
 
         """
-        c = OctgnCardData(self._name, self._prop, self._image_id)
+        _prop = self._prop.copy()
+        c = OctgnCardData(self._name, _prop, self._image_id)
         c._o8d_type = self._o8d_type
         if self._alt_data:
-            c.create_alt_card_data(self._alt_data._name, self._alt_data._prop,
+            _alt_prop = self._alt_data._prop.copy()
+            c.create_alt_card_data(self._alt_data._name, _alt_prop,
                                    self._alt_data._type_str)
         return c
 
@@ -1199,6 +1203,13 @@ class OctgnProperties(object):
         else:
             return '---\n\n'
 
+    def copy(self):
+        """Generates a copy of this properties object."""
+        result = OctgnProperties()
+        for key, value in self.__data.items():
+            result.set(key, value)
+        return result
+
     def __contains__(self, name):
         """True if property 'name' has been set."""
         return name in self.__data
@@ -1363,6 +1374,8 @@ class OctgnDataDialog(QtWidgets.QDialog):
         self._set_uuid_le.setMinimumWidth(280)
         sb_layout.addWidget(self._set_uuid_le)
         sb_layout.addStretch(1)
+        self._ids_from_set_btn = QtWidgets.QPushButton('Generate card IDs')
+        sb_layout.addWidget(self._ids_from_set_btn)
         set_box.setLayout(sb_layout)
         main_layout.addWidget(set_box)
 
@@ -1446,6 +1459,7 @@ class OctgnDataDialog(QtWidgets.QDialog):
 
         self._prev_btn.clicked.connect(self.prevClicked)
         self._next_btn.clicked.connect(self.nextClicked)
+        self._ids_from_set_btn.clicked.connect(self.generateCardIds)
 
         # Shortcut: Meta+N (next card data)
         _key = QtCore.QKeyCombination(QtCore.Qt.ControlModifier,
@@ -1543,19 +1557,24 @@ class OctgnDataDialog(QtWidgets.QDialog):
         self._prev_btn.setEnabled(index > 0)
         self._next_btn.setEnabled(index < self._card_cb.count() - 1)
 
-        pos, is_alt, card, data = self._cards[index]
-
-        if is_alt:
-            data = data.alt_data
-            self._alt_chk.setEnabled(True)
-            self._alt_chk.setChecked(data is not None)
-            self._alt_lbl.setEnabled(True)
-            self.enableTabDataInput.emit(data is not None)
+        if index >= 0:
+            pos, is_alt, card, data = self._cards[index]
+            if is_alt:
+                data = data.alt_data
+                self._alt_chk.setEnabled(True)
+                self._alt_chk.setChecked(data is not None)
+                self._alt_lbl.setEnabled(True)
+                self.enableTabDataInput.emit(data is not None)
+            else:
+                self._alt_chk.setEnabled(False)
+                self._alt_chk.setChecked(False)
+                self._alt_lbl.setEnabled(False)
+                self.enableTabDataInput.emit(True)
         else:
             self._alt_chk.setEnabled(False)
             self._alt_chk.setChecked(False)
             self._alt_lbl.setEnabled(False)
-            self.enableTabDataInput.emit(True)
+            self.enableTabDataInput.emit(False)
 
     @QtCore.Slot()
     def nextClicked(self):
@@ -1563,6 +1582,112 @@ class OctgnDataDialog(QtWidgets.QDialog):
         new_idx = min(idx + 1, self._card_cb.count() - 1)
         if idx != new_idx:
             self._card_cb.setCurrentIndex(new_idx)
+
+    @QtCore.Slot()
+    def generateCardIds(self):
+        print('GENERATE CARD IDS')
+        class Info(QtWidgets.QDialog):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                main_layout = QtWidgets.QVBoxLayout()
+                text = '''<p>This operation sets deterministic card IDs for
+                the cards based on the set ID. The final six characters of
+                each card ID is set uniquely for each card. The remaining
+                characters are the same as the set ID.</p>
+
+                <p>With the <em>Use card order</em> option, the first card gets
+                the final six characters 000001, and that value is increased
+                by one for each card.</p>
+
+                <p>With the <em>Use MCDB number</em> option, the card number
+                is used for the final six characters (note that card number
+                must be set on all the cards).</p>
+
+                <p><b>Proceed with setting card IDs?</b></p>
+                '''
+                lbl = QtWidgets.QLabel(text)
+                lbl.setTextFormat(QtCore.Qt.RichText)
+                lbl.setWordWrap(True)
+                main_layout.addWidget(lbl)
+                _l = QtWidgets.QHBoxLayout()
+                _l.addStretch(1)
+                ordered_btn = QtWidgets.QPushButton('Use card order')
+                _l.addWidget(ordered_btn)
+                number_btn = QtWidgets.QPushButton('Use MCDB number')
+                _l.addWidget(number_btn)
+                cancel_btn = QtWidgets.QPushButton('Cancel')
+                _l.addWidget(cancel_btn)
+                main_layout.addLayout(_l)
+                self.setLayout(main_layout)
+
+                ordered_btn.clicked.connect(self.useOrder)
+                number_btn.clicked.connect(self.useNumber)
+                cancel_btn.clicked.connect(self.reject)
+
+                self._use_order = None
+
+            @QtCore.Slot()
+            def useOrder(self):
+                self._use_order = True
+                self.accept()
+
+            @QtCore.Slot()
+            def useNumber(self):
+                self._use_order = False
+                self.accept()
+
+        info = Info(self)
+        if not info.exec():
+            return
+
+        new_ids = []
+        try:
+            try:
+                set_id = self._set_uuid_le.text().strip().lower()
+                uuid.UUID('{' + set_id + '}')
+            except ValueError:
+                raise LcgException('The set does not have a valid set UUID')
+
+            prefix = set_id[:-6]
+
+            if info._use_order:
+                for i, card in enumerate(self._cards):
+                    new_ids.append(f'{prefix}{(i + 1):06}')
+            else:
+                for _pos, _is_alt, card, data in self._cards:
+                    if _is_alt:
+                        continue
+                    _prop = data.properties
+                    _num = _prop.get('CardNumber').lower()
+                    if _num is None:
+                        raise LcgException('Some card(s) have no card number')
+                    if _num.endswith('a') or _num.endswith('b'):
+                        _num = _num[:-1]
+                    if not 1 <= len(_num) <= 6:
+                        raise LcgException('Invalid card number length')
+                    while len(_num) < 6:
+                        _num = '0' + _num
+                    card_id = prefix + _num
+                    try:
+                        card_id = str(uuid.UUID('{' + card_id + '}'))
+                    except ValueError:
+                        raise LcgException('Invalid card number format(s)')
+                    new_ids.append(card_id)
+                if len(set(new_ids)) != len(new_ids):
+                    raise LcgException('Cards have duplicate card number(s)')
+        except Exception as e:
+            err = lambda s1, s2: ErrorDialog(self.parentWidget(), s1, s2).exec()
+            err('Could not set card IDs', f'Error setting card IDs: {e}')
+            return
+        else:
+            _current_idx = self._card_cb.currentIndex()
+            self._card_cb.setCurrentIndex(-1)
+            _data_l = [c_data[3] for c_data in self._cards if not c_data[1]]
+            for data, new_id in zip(_data_l, new_ids):
+                data._image_id = new_id
+                if data.alt_data:
+                    data.alt_data._image_id = f'{new_id}.b'
+            self._card_cb.setCurrentIndex(_current_idx)
 
     @QtCore.Slot()
     def enableAltStatus(self, status):
@@ -1799,21 +1924,22 @@ class OctgnDataDialogGeneralTab(QtWidgets.QWidget):
 
     @QtCore.Slot()
     def cardSelected(self, index):
-        if index >= 0:
-            try:
-                if self._current_index >= 0:
-                    # Commit values of previous index before switching card
-                    _prev_idx = self._current_index
-                    self.commit(_prev_idx)
-                    pos, is_alt, card, data = self._dialog._cards[_prev_idx]
-                    _txt = f'{pos:02}' if not is_alt else f'{pos:02}B'
-                    if is_alt:
-                        data = data.alt_data
-                    if data and data.name:
-                        _txt += f' - {data.name}'
-                    self._dialog._card_cb.setItemText(_prev_idx, _txt)
-                self._current_index = index
+        try:
+            if self._current_index >= 0:
+                # Commit values of previous index before switching card
+                _prev_idx = self._current_index
+                self.commit(_prev_idx)
+                pos, is_alt, card, data = self._dialog._cards[_prev_idx]
+                _txt = f'{pos:02}' if not is_alt else f'{pos:02}B'
+                if is_alt:
+                    data = data.alt_data
+                if data and data.name:
+                    _txt += f' - {data.name}'
+                self._dialog._card_cb.setItemText(_prev_idx, _txt)
 
+            self._current_index = index
+
+            if index >= 0:
                 # Initialize card data values
                 pos, is_alt, card, data = self._dialog._cards[index]
                 if is_alt:
@@ -1886,8 +2012,8 @@ class OctgnDataDialogGeneralTab(QtWidgets.QWidget):
                 self._uuid_le.setEnabled(not is_alt)
 
                 self._current_index = index
-            except Exception as e:
-                    self._err('Exception', f'Exception: {e}')
+        except Exception as e:
+                self._err('Exception', f'Exception: {e}')
 
     @QtCore.Slot()
     def markAll(self):
@@ -2299,14 +2425,15 @@ class OctgnDataDialogOtherTab(QtWidgets.QWidget):
 
     @QtCore.Slot()
     def cardSelected(self, index):
-        if index >= 0:
-            try:
-                if self._current_index >= 0:
-                    # Commit values of previous index before switching card
-                    _prev_idx = self._current_index
-                    self.commit(_prev_idx)
-                self._current_index = index
+        try:
+            if self._current_index >= 0:
+                # Commit values of previous index before switching card
+                _prev_idx = self._current_index
+                self.commit(_prev_idx)
 
+            self._current_index = index
+
+            if index >= 0:
                 # Initialize card data values
                 pos, is_alt, card, data = self._dialog._cards[index]
                 if is_alt:
@@ -2409,8 +2536,8 @@ class OctgnDataDialogOtherTab(QtWidgets.QWidget):
                         w.setCurrentText('')
 
                 self._current_index = index
-            except Exception as e:
-                self._err('Exception', f'Exception performing operation: {e}')
+        except Exception as e:
+            self._err('Exception', f'Exception performing operation: {e}')
 
     @QtCore.Slot()
     def characterHpChanged(self, value):
@@ -2632,14 +2759,14 @@ class OctgnDataDialogDeckExportTab(QtWidgets.QWidget):
 
     @QtCore.Slot()
     def cardSelected(self, index):
-        if index >= 0:
-            try:
-                if self._current_index >= 0:
-                    # Commit values of previous index before switching card
-                    _prev_idx = self._current_index
-                    self.commit(_prev_idx)
-                self._current_index = index
+        try:
+            if self._current_index >= 0:
+                # Commit values of previous index before switching card
+                _prev_idx = self._current_index
+                self.commit(_prev_idx)
+            self._current_index = index
 
+            if index >= 0:
                 # Initialize card data values
                 pos, is_alt, card, data = self._dialog._cards[index]
                 if data and not is_alt:
@@ -2650,8 +2777,8 @@ class OctgnDataDialogDeckExportTab(QtWidgets.QWidget):
                     self._card_type_cb.setCurrentIndex(-1)
                     self._card_type_cb.setEnabled(False)
 
-            except Exception as e:
-                self._err('Exception', f'Exception performing operation: {e}')
+        except Exception as e:
+            self._err('Exception', f'Exception performing operation: {e}')
 
     @QtCore.Slot()
     def markAll(self):
@@ -4260,3 +4387,94 @@ def _validate_card_set_file(data_path, path):
             return (False, 'Invalid set ID')  # Should never happen ...
         else:
             return (True, (set_id, fanmade_l))
+
+def create_virtual_data_path(data_path):
+    """Creates a virtual OCTGN installation in provided path.
+
+    :param data_path: the path to create virtual Data/ directory
+    :type  data_path: str
+
+    The function will (try to) use git to install Data/GameDatabase,
+    and create a skeleton structure including an empty
+    Data/ImageDatabase/[game_id]/Sets/ folder.
+
+    """
+    if os.path.exists(data_path):
+        raise LcgException(f'Path {data_path} already exists')
+    try:
+        temp_dir = None
+        _created_dir = False
+        os.mkdir(data_path)
+        _created_dir = True
+        game_db_path = os.path.join(data_path, 'GameDatabase')
+        image_db_path = os.path.join(data_path, 'ImageDatabase')
+        for _p in game_db_path, image_db_path:
+            os.mkdir(_p)
+
+        # Install MC game database from git
+        temp_dir = tempfile.TemporaryDirectory()
+        temp_path = temp_dir.name
+        _url = 'https://github.com/Ouroboros009/OCTGN-Marvel-Champions.git'
+        _args = ['git', 'clone', _url]
+        subprocess.run(_args, capture_output=True, cwd=temp_path, check=True)
+        _source = os.path.join(temp_path, 'OCTGN-Marvel-Champions', mc_game_id)
+        _dest = os.path.join(game_db_path, mc_game_id)
+        shutil.move(_source, _dest)
+        _sets_dir = os.path.join(_dest, 'Sets')
+        for _p in os.listdir(_sets_dir):
+            _sub = os.path.join(_sets_dir, _p)
+            if os.path.isdir(_sub):
+                try:
+                    uuid.UUID('{' + _sub + '}')
+                except ValueError:
+                    if 'set.xml' in os.listdir(_sub):
+                        _f = os.path.join(_sub, 'set.xml')
+                        _root = ElementTree.parse(_f).getroot()
+                        if _root.tag != 'set':
+                            raise LcgException('XML: missing <set> tag')
+                        set_id = _root.attrib['id']
+                        try:
+                            uuid.UUID('{' + set_id + '}')
+                        except Exception:
+                            pass
+                        else:
+                            shutil.move(_sub, os.path.join(_sets_dir, set_id))
+
+        # Create empty ImageDatabase directory structure
+        _path = image_db_path
+        for _sub in mc_game_id, 'Sets':
+            _path = os.path.join(_path, _sub)
+            os.mkdir(_path)
+
+        # If it does not exist, create empty FanMade directory structure
+        _path = os.path.join(game_db_path, mc_game_id, 'FanMade')
+        if not os.path.isdir(_path):
+            os.mkdir(_path)
+        for _sub in 'Heroes', 'Modulars', 'Villains':
+            _sub_path = os.path.join(_path, _sub)
+            if not os.path.isdir(_sub_path):
+                os.mkdir(_sub_path)
+
+        # Validate path structure
+        OctgnCardSetData.validate_octgn_data_path(data_path)
+    except Exception as e:
+        if _created_dir:
+            shutil.rmtree(data_path)
+        raise(e)
+    finally:
+        if temp_dir:
+            temp_dir.cleanup()
+
+def install_image_pack(data_path, o8c_path):
+    """Installs .o8c image pack into OCTGN Data/ structure at data_path."""
+
+    OctgnCardSetData.validate_octgn_data_path(data_path)
+
+    zf = zipfile.ZipFile(o8c_path)
+    for _name in zf.namelist():
+        _split = _name.split('/')
+        if not _split or _split[0] != mc_game_id:
+            raise LcgException('Not a valid Image Pack for Marvel Champions')
+    else:
+        image_db_path = os.path.join(data_path, 'ImageDatabase')
+        zf.extractall(image_db_path)

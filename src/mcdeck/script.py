@@ -420,6 +420,16 @@ class MCDeck(QtWidgets.QMainWindow):
         action.triggered.connect(self.menu_octgn_card_set_uninstaller)
         self._octgn_card_set_uninstaller = action
 
+        action = QtGui.QAction('Create virtual installation', self)
+        action.setStatusTip('Create a virtual OCTGN Data/ directory')
+        action.triggered.connect(self.menu_octgn_create_virtual_installation)
+        self._octgn_create_virtual_installation = action
+
+        action = QtGui.QAction('Install image packs', self)
+        action.setStatusTip('Install OCTGN MC image packs')
+        action.triggered.connect(self.menu_octgn_install_image_packs)
+        self._octgn_install_image_packs = action
+
         action = QtGui.QAction('&About', self)
         action.setStatusTip('Information about this app')
         action.triggered.connect(self.helpAbout)
@@ -520,7 +530,9 @@ class MCDeck(QtWidgets.QMainWindow):
         octgn_menu.addSeparator()
         octgn_menu.addAction(self._octgn_card_set_installer)
         octgn_menu.addAction(self._octgn_card_set_uninstaller)
-        tools_menu.addSeparator()
+        octgn_menu.addSeparator()
+        octgn_menu.addAction(self._octgn_create_virtual_installation)
+        octgn_menu.addAction(self._octgn_install_image_packs)
 
         selection_menu = menu_bar.addMenu('&Help')
         selection_menu.addAction(help_about)
@@ -1180,6 +1192,137 @@ class MCDeck(QtWidgets.QMainWindow):
         _i(self, 'Card set installation result', _msg)
 
     @QtCore.Slot()
+    def menu_octgn_create_virtual_installation(self):
+        info = QtWidgets.QMessageBox(self, 'Confirm operation', '')
+        text = '''<p>This operation sets up a virtual OCTGN <tt>Data/</tt>
+        directory. Note that in order for this operation to work, the command
+        line tool <a href="https://git-scm.com/">git</a> <b>must be
+        installed</b> on the system.</p>
+
+        <p>An installation of <a href="https://www.octgn.net/">OCTGN</a> has
+        a user directory in which game data is installed, and a subdirectory
+        <tt>Data/</tt> in which all Marvel Champions related content exists.
+        As OCTGN is Windows-only, this content is not accessible on other
+        platforms.</p>
+
+        <p>What this operation does, is to set up a user selected
+        directory with the same structure as an OCTGN <tt>Data/</tt>
+        directory, including key sub-directories. It then uses <tt>git</tt>
+        to download the latest version of game database data from
+        <tt>https://github.com/Ouroboros009/OCTGN-Marvel-Champions.git</tt>.
+        </p>
+
+        <p>Installation of image packs needs to be performed in a separate
+        operation (available from Tools -> Octgn in the menu).</p>
+
+        <p>The next step is to select a parent directory for the virtual
+        OCTGN installation. A subdirectory <tt>Data/</tt> will be created
+        inside that directory. <b>Proceed with selecting parent directory of
+        virtual installation?</b></p>
+        '''
+        info.setInformativeText(text)
+        _btns = QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel
+        info.setStandardButtons(_btns)
+        info.setDefaultButton(QtWidgets.QMessageBox.Ok)
+        result = info.exec()
+        if result & QtWidgets.QMessageBox.Cancel:
+            return
+
+        _title = 'Choose directory in which to create Data/ structure'
+        path = QtWidgets.QFileDialog.getExistingDirectory(self, _title)
+        if not path:
+            return
+
+        _qpd = QtWidgets.QProgressDialog
+        dlg = _qpd('Downloading MC game database from github', 'Cancel', 0, 2)
+        dlg.show()
+        dlg.setValue(1)
+        QtCore.QCoreApplication.processEvents()  # Force Qt update
+        try:
+            data_path = os.path.join(path, 'Data')
+            octgn.create_virtual_data_path(data_path)
+        except Exception as e:
+            dlg.hide()
+            err = lambda s1, s2: ErrorDialog(self, s1, s2).exec()
+            err('Operation failed', f'Could not install: {e}')
+            return
+        else:
+            dlg.hide()
+            _dfun = QtWidgets.QMessageBox.question
+            _keys = QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+            _msg = ('Installation was successful, data was installed in '
+                    f'{data_path}\n\n'
+                    'Do you wish to update the OCTGN data path in settings to '
+                    'use the newly created virtual installation?')
+            k = _dfun(self, 'Choose whether to update settings', _msg, _keys)
+            if k == QtWidgets.QMessageBox.Yes:
+                MCDeck.settings.octgn_path = data_path
+                octgn.OctgnCardSetData.load_all_octgn_sets(data_path=data_path,
+                                                           force=True)
+
+    @QtCore.Slot()
+    def menu_octgn_install_image_packs(self):
+        try:
+            data_path = octgn.OctgnCardSetData.get_octgn_data_path(val=True)
+        except Exception as e:
+            err = lambda s1, s2: ErrorDialog(self, s1, s2).exec()
+            err('No OCTGN Data/ directory',
+                f'Could not find a valid Data/ directory: {e}')
+            return
+
+        info = QtWidgets.QMessageBox(self, 'Confirm operation', '')
+        text = '''<p>This operation installs Marvel Champions OCTGN .o8c image
+        packs into the OCTGN <tt>Data/</TT> directory. See the OCTGN
+        <a href="https://twistedsistem.wixsite.com/octgnmarvelchampions/">
+        MC module site</a> for information on how to download image packs.</p>
+
+        <p>Proceed with selecting image packs to install?</p>
+        '''
+        info.setInformativeText(text)
+        _btns = QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel
+        info.setStandardButtons(_btns)
+        info.setDefaultButton(QtWidgets.QMessageBox.Ok)
+        result = info.exec()
+        if result & QtWidgets.QMessageBox.Cancel:
+            return
+
+        _dlg = QtWidgets.QFileDialog.getOpenFileNames
+        _flt = 'Card set (*.o8c)'
+        paths, cat = _dlg(self, 'Select image pack(s) to install',
+                          filter=_flt)
+        if not paths:
+            return
+
+        installed = []
+        failed = []
+        for o8c_path in paths:
+            try:
+                octgn.install_image_pack(data_path, o8c_path)
+            except Exception as e:
+                failed.append((o8c_path, str(e)))
+            else:
+                installed.append(o8c_path)
+        if installed:
+            octgn.OctgnCardSetData.load_all_octgn_sets(data_path=data_path,
+                                                       force=True)
+
+        _i = QtWidgets.QMessageBox.information
+        _msg = ''
+        if installed:
+            _msg += 'The following image packs were installed:\n'
+            for _f in installed:
+                _msg += f'* {_f}\n'
+            _msg += '\n'
+        if failed:
+            _msg += 'The following image packs failed to install:\n'
+            for _f, _m in failed:
+                _msg += f'* {_f} ({_m})\n'
+            _msg += '\n'
+        if installed:
+            _msg += 'The OCTGN card database has been reloaded.'
+        _i(self, 'Image pack installation result', _msg)
+
+    @QtCore.Slot()
     def deckHasSelection(self, status):
         """Update to whether deck has a current selection of cards."""
         for w in (self.__cut_action, self.__copy_action, self.__set_player,
@@ -1253,14 +1396,14 @@ class MCDeck(QtWidgets.QMainWindow):
         """Show a help->usage dialog box."""
 
         about = QtWidgets.QMessageBox(self, 'Usage', '')
-        text = '''<p>Most use of this tool's usage is hopefully more or less
-        self explanatory, as most options are explained by tool tips, and the
-        app is not really rocket science - you can combine cards into decks, you
-        can open and save decks, and you can export to printable PDFs or
-        card sets for Tabletop Simulator.</p>
+        text = '''<p>MCdeck is hopefully more or less self explanatory. Most
+        options are explained by tool tips, and the app is not rocket science;
+        you can combine cards into decks, open and save decks, export to
+        printable PDFs, and export card sets for Tabletop Simulator or OCTGN.
+        </p>
 
-        <p>Many app operations act on a card <em>selection</em>. A single card
-        can be selected by left-clicking on it. If the ctrl (or meta) key is
+        <p>Many operations act on a <em>card selection</em>. A single card
+        can be selected by left-clicking on it. If the ctrl (meta) key is
         held while clicking, the card's selection status is toggled. If the
         shift key is held, then the selection is extended as a range to
         include the clicked card.</p>
@@ -1278,7 +1421,7 @@ class MCDeck(QtWidgets.QMainWindow):
 
         <p>The app supports pasting image files and images from the system
         clipboard, as well as dragging image files on the app. If a
-        .zip or .mcd file is dragged onto the app, MCdeck will try to
+        .zip, .mcd or .o8d file is dragged onto the app, MCdeck will try to
         open that file as a deck.</p>
         '''
         about.setInformativeText(text)
@@ -1293,49 +1436,52 @@ class MCDeck(QtWidgets.QMainWindow):
         about = QtWidgets.QMessageBox(self, 'Resources', '')
         text = '''<p>This tool aims to assist with using custom cards together
         with <a href="https://www.fantasyflightgames.com/en/products/marvel-champions-the-card-game/">
-        Marvel Champions: The Card Game</a>; printing cards for use with the
-        physical game as well as or exporting card sets for use with
+        Marvel Champions: The Card Game</a> (MC); printing cards for use with
+        the physical game as well as exporting card sets for use with
         <a href="https://store.steampowered.com/app/286160/Tabletop_Simulator/">
-        Tabletop Simulator</a>.</p>
+        Tabletop Simulator</a> or <a href="https://www.octgn.net/">OCTGN</a>.</p>
 
-        <p>The tool is intended to be a <em>supplement</em> to the game. You
+        <p>The tool is intended to be a <em>supplement</em> to MC. You
         will need a physical copy of the game in order to combine with custom
-        cards for physical play. Keep in mind, as a user of this product, you
-        are responsible for how you use it, including any legal restrictions
-        related to e.g. copyrights.</p>
-
-        <p>There is also a <em>moral</em> obligation to ensure that
-        fan made custom products act as a <em>supplement</em> to the related
-        commercial product, in a way that benefits both the customers and the
-        owner of the product. Make sure you use this tool responsibly in a way
-        that also supports the business of MC: TGG copyright holders.</p>
+        cards for physical play. As a user of MCdeck, you are responsible for
+        how you use it, including any legal restrictions related to copyrights.
+        There is also a <em>moral</em> obligation to ensure that fan made
+        custom products act as a <em>supplement</em> to the related commercial
+        product, in a way that benefits both the customers and the owner of the
+        product. Make sure you use this tool responsibly in a way that also
+        supports the business of MC copyright holders.</p>
 
         <p>A good starting resources for custom content is
         <a href="https://hallofheroeslcg.com/custom-content/">Hall of Heroes</a>
-        . From that page you should be able to find a link to a <em>custom
-        content discord</em>, which is a thriving community of all things
-        custom MCG.</p>
+        and the MC Homebrew
+        <a href="https://discordapp.com/invite/fWrvrNh">discord</a>, which is
+        a thriving community for custom MC content. </p>
+
+        <p>For Tabletop Simulator</a> (TTS), the mod
+        <a href="https://steamcommunity.com/sharedfiles/filedetails/?id=2514286571">Hitch's Table</a>
+        has a great implementation of MC. TTS deck images exported from MCdeck
+        can be imported directly into a TTS game.</p>
+
+        <p>MCdeck can interact with a local OCTGN installation with the MC
+        <a href="https://twistedsistem.wixsite.com/octgnmarvelchampions">
+        mod</a> installed. Some custom content is readily available from
+        Ouroboros' Google Drive folder with pre-packaged
+        <a href="https://drive.google.com/drive/u/1/folders/1ruQRsptiuxECyzocnQ5dirXAQmexX8tu">
+        heroes and scenarios</a>. MCdeck can also interact with OCTGN content
+        on systems that do not have OCTGN installed (including non-Windows
+        platforms). Select Tools -> Octgn -> Create virtual installation for
+        more information.</p>
 
         <p>Your best bet for getting some level of product support is to
-        go to the channel #cloudberries in the previously mentioned discord.
+        go to the channel #cloudberries in the Homebrew
+        <a href="https://discordapp.com/invite/fWrvrNh">discord</a>.
         Please keep expectations regarding support on the low side; this app
-        is a marginal side project in the very busy life of its author, and
-        I really have very limited time to follow up on questions and issues -
-        with small kids it is a miracle I found the time to write the app
-        in the first place :-)  Nevertheless, you may try to reach me at
-        #cloudberries, and even if I do not have the opportunity to be
-        responsive, chances are you may be able to find others who know the
-        tool.</p>
+        is a marginal side project in the very busy life of its author.</p>
 
-        <p>The tool itself is available from the
+        <p>MCdeck is available from the
         <a href="https://pypi.org/project/mcdeck/">Python Package Index</a>,
-        including links to source code on GitHub and an issue tracker. Also
-        note that MCdeck has <a href="https://pypi.org/project/lcgtools/">
-        lcgtools</a> as a dependency, and when that tool is installed, you
-        also get access to a set of command line tools for generating card
-        PDF documents.</p>
-
-        <p>Best wishes for using this tool!  / Cloudberries</p>
+        with source on <a href="https://github.com/lcgtools/MCdeck">github</a>.
+        </p>
         '''
         about.setInformativeText(text)
         about.setStandardButtons(QtWidgets.QMessageBox.Ok)
@@ -2472,7 +2618,7 @@ class Deck(QtWidgets.QScrollArea):
                         n_v += 1
                         _next = n_v
 
-                    if _mode:
+                    if _mode and not card.specified_back_img:
                         # Store player, encounter or villain card
                         if _mode != mode:
                             mcd += f'\n{_mode}:\n'
@@ -2898,13 +3044,15 @@ class Deck(QtWidgets.QScrollArea):
                 self.deckHasOctgn.emit(False)
 
             self.reset()
-        except LcgException:
+        except LcgException as e:
             # Could not load deck, clear the partially loaded deck
             for card in self.__cards:
                 card.hide()
             self.__cards = []
             self._octgn = None
             self.reset()
+            err = lambda s1, s2: ErrorDialog(self, s1, s2).exec()
+            err('Error loading deck', f'Could not load deck: {e}')
             return False
         else:
             self._unsaved = False

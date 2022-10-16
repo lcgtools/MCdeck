@@ -1,3 +1,9 @@
+v0.6.2
+- New: option to set card IDs based on set ID in OCTGN metadata editor
+- New: install OCTGN image packs
+- New: create OCTGN virtual Data/ installation
+- Fix: decks now save correctly when card has back image while type is set
+
 v0.6.1.1:
 - New: add a setting to allow card sets with non-o8d files in FanMade folder
 
