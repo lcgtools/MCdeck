@@ -244,7 +244,10 @@ class Settings(QtCore.QSettings):
     @property
     def twosided(self):
         """If True generate PDF for  2-sided print, otherwise fold-printing."""
-        return bool(self.value('twosided', True))
+        val = self.value('twosided', True)
+        if isinstance(val, str):
+            val = (val.lower() == 'true')
+        return val
 
     @twosided.setter
     def twosided(self, value):
@@ -340,7 +343,10 @@ class Settings(QtCore.QSettings):
     @property
     def octgn_allow_fanmade_non_o8d(self):
         """If False card set FanMade folderes may only include .o8d files."""
-        return self.value('octgn_allow_fanmade_non_o8d', False)
+        val = self.value('octgn_allow_fanmade_non_o8d', False)
+        if isinstance(val, str):
+            val = (val.lower() == 'true')
+        return val
 
     @octgn_allow_fanmade_non_o8d.setter
     def octgn_allow_fanmade_non_o8d(self, value):

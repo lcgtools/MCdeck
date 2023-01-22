@@ -410,16 +410,6 @@ class MCDeck(QtWidgets.QMainWindow):
         action.triggered.connect(self.menu_octgn_uninstall)
         self._octgn_uninstall = action
 
-        action = QtGui.QAction('Card set installer', self)
-        action.setStatusTip('Install a (set of) .zip format card set(s)')
-        action.triggered.connect(self.menu_octgn_card_set_installer)
-        self._octgn_card_set_installer = action
-
-        action = QtGui.QAction('Card set uninstaller', self)
-        action.setStatusTip('Uninstalls a (set of) .zip format card set(s)')
-        action.triggered.connect(self.menu_octgn_card_set_uninstaller)
-        self._octgn_card_set_uninstaller = action
-
         action = QtGui.QAction('Create virtual installation', self)
         action.setStatusTip('Create a virtual OCTGN Data/ directory')
         action.triggered.connect(self.menu_octgn_create_virtual_installation)
@@ -429,6 +419,16 @@ class MCDeck(QtWidgets.QMainWindow):
         action.setStatusTip('Install OCTGN MC image packs')
         action.triggered.connect(self.menu_octgn_install_image_packs)
         self._octgn_install_image_packs = action
+
+        action = QtGui.QAction('Install .zip card set', self)
+        action.setStatusTip('Install a (set of) .zip format card set(s)')
+        action.triggered.connect(self.menu_octgn_card_set_installer)
+        self._octgn_card_set_installer = action
+
+        action = QtGui.QAction('Uninstall .zip card set', self)
+        action.setStatusTip('Uninstalls a (set of) .zip format card set(s)')
+        action.triggered.connect(self.menu_octgn_card_set_uninstaller)
+        self._octgn_card_set_uninstaller = action
 
         action = QtGui.QAction('&About', self)
         action.setStatusTip('Information about this app')
@@ -528,11 +528,12 @@ class MCDeck(QtWidgets.QMainWindow):
         octgn_menu.addAction(self._octgn_install)
         octgn_menu.addAction(self._octgn_uninstall)
         octgn_menu.addSeparator()
-        octgn_menu.addAction(self._octgn_card_set_installer)
-        octgn_menu.addAction(self._octgn_card_set_uninstaller)
-        octgn_menu.addSeparator()
-        octgn_menu.addAction(self._octgn_create_virtual_installation)
-        octgn_menu.addAction(self._octgn_install_image_packs)
+        octgn_db_menu = octgn_menu.addMenu('Manage database')
+        octgn_db_menu.addAction(self._octgn_create_virtual_installation)
+        octgn_db_menu.addAction(self._octgn_install_image_packs)
+        octgn_db_menu.addSeparator()
+        octgn_db_menu.addAction(self._octgn_card_set_installer)
+        octgn_db_menu.addAction(self._octgn_card_set_uninstaller)
 
         selection_menu = menu_bar.addMenu('&Help')
         selection_menu.addAction(help_about)
