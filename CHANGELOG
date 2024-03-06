@@ -1,3 +1,6 @@
+v0.6.4:
+- Fix: updated dependency on new required lcgtools version
+
 v0.6.3:
 - Fix: settings dialog no longer fails to launch on Windows when boolean
        parameters have been changed from defaults
