@@ -2118,7 +2118,7 @@ class Deck(QtWidgets.QScrollArea):
             if aspect_rotation != 'none':
                 if aspect_rotation == 'clockwise':
                     clockwise = True
-                if aspect_rotation == 'anticlockwise':
+                elif aspect_rotation == 'anticlockwise':
                     clockwise = False
                 else:
                     raise RuntimeError('Should never happen')
@@ -2151,12 +2151,27 @@ class Deck(QtWidgets.QScrollArea):
                         if res_type == 1:
                             back = None
                             ctype = res_data
-                        elif res_type == 2:
-                            back = res_data
-                            ctype = Card.type_unspecified
                         elif res_type == 4:
                             back = None
                             ctype = Card.type_unspecified
+                        elif res_type == 2:
+                            back = res_data
+                            ctype = Card.type_unspecified
+
+                            # Rotate back if not same aspect as front
+                            _s = MCDeck.settings
+                            _front_h = _s.card_height_mm
+                            _front_w = _s.card_width_mm
+                            if not isinstance(back, LcgImage):
+                                back = LcgImage(back)
+                            _port_f = (_front_h >= _front_w)
+                            _port_b = (back.heightMm() >= back.widthMm())
+                            if _port_f ^ _port_b:
+                                aspect_rotation = MCDeck.settings.aspect_rotation
+                                if aspect_rotation == 'clockwise':
+                                    back = LcgImage(back).rotateClockwise()
+                                elif aspect_rotation == 'anticlockwise':
+                                    back = LcgImage(back).rotateAntiClockwise()
                         else:
                             raise RuntimeError('Should never happen')
                         for i, img in enumerate(front_images):
@@ -2363,7 +2378,7 @@ class Deck(QtWidgets.QScrollArea):
                 if aspect_rotation != 'none':
                     if aspect_rotation == 'clockwise':
                         clockwise = True
-                    if aspect_rotation == 'anticlockwise':
+                    elif aspect_rotation == 'anticlockwise':
                         clockwise = False
                     else:
                         raise RuntimeError('Should never happen')
@@ -3160,6 +3175,7 @@ class Card(QtWidgets.QWidget):
         self.__back_offset = 0
         self.__margin = 0
         self.__cropped_back = None
+        self.__back_cache = None   # Caches rotated back image when appropriate
 
         self._octgn = None         # OCTGN card data for the card (if set)
         self._octgn_back = None    # OCTGN card data for the card back (if set)
@@ -3303,14 +3319,43 @@ class Card(QtWidgets.QWidget):
         """
         if self.__back:
             return self.__back
-        elif self.__type == Card.type_player:
-            return MCDeck.settings.player_back_image()
+
+        if self.__type == Card.type_player:
+            img = MCDeck.settings.player_back_image()
         elif self.__type == Card.type_encounter:
-            return MCDeck.settings.encounter_back_image()
+            img = MCDeck.settings.encounter_back_image()
         elif self.__type == Card.type_villain:
-            return MCDeck.settings.villain_back_image()
+            img = MCDeck.settings.villain_back_image()
         else:
             return None
+
+        # If default back side does not have same aspect as front side,
+        # rotate the back image
+        _s = MCDeck.settings
+        _port_f = (_s.card_height_mm >= _s.card_width_mm)
+        if not isinstance(img, LcgImage):
+            img = LcgImage(img)
+        _port_b = (img.heightMm() >= img.widthMm())
+        if _port_f ^ _port_b:
+            if self.__back_cache:
+                _c_back, _c_rot = self.__back_cache
+                if _c_back is img:
+                    return _c_rot
+            aspect_rotation = MCDeck.settings.aspect_rotation
+            if aspect_rotation == 'clockwise':
+                clockwise = True
+            elif aspect_rotation == 'anticlockwise':
+                clockwise = False
+            else:
+                return img
+            if clockwise:
+                _rotated = LcgImage(img).rotateClockwise()
+            else:
+                _rotated = LcgImage(img).rotateAntiClockwise()
+            self.__back_cache = (img, _rotated)
+            return _rotated
+        else:
+            return img
 
     @property
     def specified_back_img(self):

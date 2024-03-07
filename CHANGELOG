@@ -1,3 +1,6 @@
+v0.6.5
+- Fix: card back rotates to match aspect of front
+
 v0.6.4:
 - Fix: updated dependency on new required lcgtools version
 
